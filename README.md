@@ -125,7 +125,7 @@ The sidebar ships with outcome-based presets: Web Images, Archive Photos, Images
 
 ## Privacy
 
-No network entitlement, no telemetry, no uploads. Everything is processed locally. Generated files are the only writes; replaced files are never silently destroyed. **Undo Run** moves generated files to the Trash.
+No telemetry, no uploads. Everything is processed locally; the only network request is the update check, which can be turned off in Settings → Updates. Generated files are the only writes; replaced files are never silently destroyed. **Undo Run** moves generated files to the Trash.
 
 ## License
 

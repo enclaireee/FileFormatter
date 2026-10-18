@@ -10,6 +10,7 @@ enum AppSettings {
     static let compressSuffix = "suffix.compress"
     static let backgroundSuffix = "suffix.nobg"
     static let hdBackground = "background.hd"
+    static let revealWhenDone = "output.revealWhenDone"
     static let shelfEnabled = "shelf.enabled"
     static let hotkeyEnabled = "hotkey.enabled"
     static let hotkeyKeyCode = "hotkey.keyCode"
@@ -24,6 +25,7 @@ enum AppSettings {
             compressSuffix: "-small",
             backgroundSuffix: "-nobg",
             hdBackground: true,
+            revealWhenDone: true,
             shelfEnabled: true,
             // ⌥⌘F: Carbon key code 3, optionKey | cmdKey.
             hotkeyEnabled: true,

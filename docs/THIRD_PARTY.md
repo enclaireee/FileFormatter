@@ -32,6 +32,14 @@ See `rust/Cargo.lock`. Direct dependencies: `thiserror` (MIT/Apache-2.0), `uniff
 - Distribution: compiled `.mlmodelc` in the app's `Resources/Models/`, fetched by `scripts/fetch-model.sh`
 - Full licenses: `docs/licenses/birefnet/`
 
+## Sparkle 2.9.6
+
+- License: MIT (bundles its own third-party notices in the same file)
+- Source: https://github.com/sparkle-project/Sparkle
+- Use: automatic updates
+- Distribution: `Contents/Frameworks/Sparkle.framework`, via Swift Package Manager
+- Full license: `docs/licenses/Sparkle-LICENSE`
+
 ## FFmpeg 8.0.1 (LGPL-2.1-or-later)
 
 - Source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz

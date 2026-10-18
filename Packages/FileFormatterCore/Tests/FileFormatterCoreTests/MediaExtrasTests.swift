@@ -27,6 +27,26 @@ struct MediaExtrasTests {
         #expect(!args.contains("4M"))
     }
 
+    @Test func remuxesOnlyWhenStreamsFitTheContainer() {
+        let mkv = URL(fileURLWithPath: "/tmp/in.mkv")
+        func streams(_ video: String) -> [MediaStreamInfo] {
+            [MediaStreamInfo(index: 0, codecType: "video", codecName: video),
+             MediaStreamInfo(index: 1, codecType: "audio", codecName: "aac")]
+        }
+        func args(_ source: URL, _ format: MediaTarget, _ video: String, targetBytes: UInt64? = nil) -> [String] {
+            MediaConverter.arguments(source: source, destination: dst, format: format, quality: 0.6,
+                                     targetBytes: targetBytes, duration: 60, streams: streams(video))
+        }
+        // A bare "-c copy" is the remux; re-encodes still copy subtitles with "-c:s".
+        #expect(args(mkv, .mp4, "h264").contains("-c"))
+        #expect(args(mkv, .mp4, "hevc").contains("hvc1"))
+        #expect(args(src, .mkv, "h264").contains("-c"))
+        #expect(!args(src, .mp4, "h264").contains("-c"), "same extension is a recompress request")
+        #expect(!args(mkv, .mp4, "h264", targetBytes: 5_000_000).contains("-c"))
+        #expect(!args(mkv, .mp4, "vp9").contains("-c"))
+        #expect(args(src, .webm, "h264").contains("-row-mt"))
+    }
+
     @Test func convertsToGifAndFitsSize() async throws {
         let locator = FFmpegLocator.discover()
         let ffmpeg = try #require(locator.ffmpegURL, "ffmpeg was not found.")
@@ -45,6 +65,12 @@ struct MediaExtrasTests {
         try await converter.convert(source: video, destination: gif, format: .gif, quality: 0.6)
         let head = try FileHandle(forReadingFrom: gif).read(upToCount: 4) ?? Data()
         #expect(String(decoding: head, as: UTF8.self) == "GIF8")
+
+        let remuxed = dir.appendingPathComponent("remux.mkv")
+        try await converter.convert(source: video, destination: remuxed, format: .mkv, quality: 0.6)
+        let streams = try await MediaProbe(locator: locator).probe(remuxed).streams
+        #expect(streams.contains { $0.codecType == "video" && $0.codecName == "h264" })
+        #expect(streams.contains { $0.codecType == "audio" })
 
         let small = dir.appendingPathComponent("small.mp4")
         try await converter.convert(

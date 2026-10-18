@@ -74,36 +74,65 @@ public actor MediaConverter {
             }
         }
 
-        let session = MediaProcess(
-            executable: ffmpeg,
-            arguments: Self.arguments(
-                source: source,
-                destination: destination,
-                format: format,
-                quality: quality,
-                targetBytes: targetBytes,
-                duration: duration
-            ),
-            onStdoutLine: lineHandler
-        )
-
-        let result: MediaProcess.Result
-        do {
-            result = try await withTaskCancellationHandler {
-                try await session.run()
-            } onCancel: {
-                session.cancel()
+        func run(_ streams: [MediaStreamInfo]?) async throws -> MediaProcess.Result {
+            let session = MediaProcess(
+                executable: ffmpeg,
+                arguments: Self.arguments(
+                    source: source,
+                    destination: destination,
+                    format: format,
+                    quality: quality,
+                    targetBytes: targetBytes,
+                    duration: duration,
+                    streams: streams
+                ),
+                onStdoutLine: lineHandler
+            )
+            do {
+                return try await withTaskCancellationHandler {
+                    try await session.run()
+                } onCancel: {
+                    session.cancel()
+                }
+            } catch let error as MediaError {
+                throw error
+            } catch {
+                throw MediaError.conversionFailed(message: error.localizedDescription)
             }
-        } catch let error as MediaError {
-            throw error
-        } catch {
-            throw MediaError.conversionFailed(message: error.localizedDescription)
         }
 
+        var result = try await run(info?.streams)
+        // A stream copy can trip on odd timestamps; fall back to a re-encode once.
+        if result.status != 0, targetBytes == nil, let streams = info?.streams,
+           Self.canRemux(source: source, format: format, streams: streams) {
+            result = try await run(nil)
+        }
         guard result.status == 0 else {
             throw MediaError.conversionFailed(message: mediaStderrTail(result.stderr))
         }
         sink.report(1)
+    }
+
+    /// True when every mapped stream already fits `format`, so changing the container needs no re-encode.
+    /// Same-extension runs are compression requests and always re-encode.
+    nonisolated static func canRemux(source: URL, format: MediaTarget, streams: [MediaStreamInfo]) -> Bool {
+        guard [.mp4, .mov, .mkv].contains(format),
+              source.pathExtension.lowercased() != format.fileExtension,
+              let video = streams.first(where: { $0.codecType == "video" }) else { return false }
+        let mkv = format == .mkv
+        let videoOK: Set<String> = mkv ? ["h264", "hevc", "vp9", "av1"] : ["h264", "hevc"]
+        let audioOK: Set<String> = mkv
+            ? ["aac", "mp3", "alac", "ac3", "eac3", "opus", "vorbis", "flac"]
+            : ["aac", "mp3", "alac", "ac3", "eac3"]
+        let subtitleOK: Set<String> = mkv ? ["subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle"] : ["mov_text"]
+        return videoOK.contains(video.codecName)
+            && streams.allSatisfy { stream in
+                switch stream.codecType {
+                case "audio": audioOK.contains(stream.codecName)
+                case "subtitle": subtitleOK.contains(stream.codecName)
+                default: true
+                }
+            }
     }
 
     nonisolated static func arguments(
@@ -112,7 +141,8 @@ public actor MediaConverter {
         format: MediaTarget,
         quality: Double,
         targetBytes: UInt64? = nil,
-        duration: Double? = nil
+        duration: Double? = nil,
+        streams: [MediaStreamInfo]? = nil
     ) -> [String] {
         // Without a known duration a size target can't become a bitrate, so it is ignored.
         let sizeTarget: (bytes: UInt64, duration: Double)? = {
@@ -140,7 +170,7 @@ public actor MediaConverter {
             case .mp3:
                 arguments += ["-c:a", "libmp3lame", "-b:a", "\(kbps)k"]
             case .m4a:
-                arguments += ["-c:a", "aac", "-b:a", "\(kbps)k"]
+                arguments += ["-c:a", "aac_at", "-b:a", "\(kbps)k"]
             case .flac:
                 arguments += ["-c:a", "flac"]
             case .wav:
@@ -161,6 +191,14 @@ public actor MediaConverter {
                 "-vf", "fps=\(fps),scale='min(\(width),iw)':-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4",
                 "-loop", "0"
             ]
+        } else if targetBytes == nil, let streams, canRemux(source: source, format: format, streams: streams) {
+            arguments += ["-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map_metadata", "0", "-map_chapters", "0", "-c", "copy"]
+            if format != .mkv {
+                if streams.first(where: { $0.codecType == "video" })?.codecName == "hevc" {
+                    arguments += ["-tag:v", "hvc1"]  // QuickTime only plays HEVC tagged hvc1
+                }
+                arguments += ["-movflags", "+faststart"]
+            }
         } else {
             arguments += ["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0"]
 
@@ -188,14 +226,14 @@ public actor MediaConverter {
             case .mp4, .mov, .mkv:
                 arguments += ["-c:v", "h264_videotoolbox", "-allow_sw", "1"] + h264Rate + [
                     "-pix_fmt", "yuv420p",
-                    "-c:a", "aac",
+                    "-c:a", "aac_at",
                     "-b:a", "\(sizeTarget == nil ? audioBitrate(quality) : (videoKbps != nil && sizeTarget!.bytes <= 25_000_000 ? 96 : 128))k"
                 ]
                 if format != .mkv {
                     arguments += ["-movflags", "+faststart"]
                 }
             case .webm:
-                arguments += ["-c:v", "libvpx-vp9"]
+                arguments += ["-c:v", "libvpx-vp9", "-row-mt", "1", "-deadline", "good", "-cpu-used", "4"]
                 arguments += videoKbps.map { ["-b:v", "\($0)k"] } ?? ["-crf", "32", "-b:v", "0"]
                 arguments += [
                     "-pix_fmt", "yuv420p",

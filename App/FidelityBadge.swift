@@ -38,7 +38,6 @@ struct FidelityBadge: View {
 struct StatusBadge: View {
     let status: ItemStatus
 
-    @ViewBuilder
     var body: some View {
         switch status {
         case .pending:
@@ -54,13 +53,26 @@ struct StatusBadge: View {
             Label("Done", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         case .failed(let message):
-            Label("Failed", systemImage: "exclamationmark.octagon.fill")
-                .foregroundStyle(.red)
-                .help(message)
-        case .skipped(let reason):
-            Text("Skipped")
-                .foregroundStyle(.secondary)
-                .help(reason)
+            VStack(alignment: .leading, spacing: 1) {
+                Label("Failed", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+                reason(message)
+            }
+        case .skipped(let message):
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Skipped")
+                    .foregroundStyle(.secondary)
+                reason(message)
+            }
         }
+    }
+
+    private func reason(_ message: String) -> some View {
+        Text(message)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(message)
     }
 }

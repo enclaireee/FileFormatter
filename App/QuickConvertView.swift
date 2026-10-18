@@ -10,6 +10,8 @@ final class QuickConvertState {
     var isStarting = false
     var undoing = false
     var error: String?
+    /// The last job started, so a failure can offer Try Again.
+    var lastJob: ConversionJob?
     /// A Compress action waiting on its options panel.
     var configuring: QuickAction?
 
@@ -33,6 +35,7 @@ struct QuickConvertView: View {
     let model: AppModel
     var reopen: () -> Void = {}
     @State private var targeted = false
+    @AppStorage(AppSettings.revealWhenDone) private var revealWhenDone = true
 
     private var running: Bool { model.isQuickRunning || state.isStarting }
 
@@ -71,7 +74,8 @@ struct QuickConvertView: View {
             .frame(maxWidth: .infinity, minHeight: 110)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(targeted ? Color.accentColor : Color.secondary.opacity(0.5),
+                    .fill(targeted ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                    .strokeBorder(targeted ? Color.accentColor : Color.secondary,
                                   style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
             )
             Button("Choose Files…", action: choose)
@@ -116,12 +120,20 @@ struct QuickConvertView: View {
                         .frame(width: 28, height: 28).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // Esc clears; the Compress panel's Back owns Esc while it is open.
+                .keyboardShortcut(state.configuring == nil ? .cancelAction : nil)
                 .accessibilityLabel("Clear files")
-                .help("Clear files")
+                .help("Clear files (Esc)")
             }
             if let error = state.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
+                HStack(alignment: .firstTextBaseline) {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                    Spacer(minLength: 4)
+                    if let job = state.lastJob {
+                        Button("Try Again") { start(job) }.controlSize(.small)
+                    }
+                }
             }
             if let action = state.configuring {
                 CompressPanel(action: action, urls: state.urls) {
@@ -145,6 +157,8 @@ struct QuickConvertView: View {
 
     private func start(_ job: ConversionJob) {
         let urls = state.urls
+        state.lastJob = job
+        state.error = nil
         state.isStarting = true
         Task {
             let summary = await model.quickRun(urls: urls, job: job)
@@ -161,6 +175,13 @@ struct QuickConvertView: View {
 
     private var runningView: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !model.quickItems.isEmpty {
+                let total = model.quickItems.count
+                let done = model.quickItems.filter(\.status.isTerminal).count
+                ProgressView(value: Double(done), total: Double(total)) {
+                    Text("Converting \(min(done + 1, total)) of \(total)").font(.caption)
+                }
+            }
             ForEach(model.quickItems.prefix(6)) { item in
                 HStack(spacing: 8) {
                     statusIcon(item.status)
@@ -174,6 +195,7 @@ struct QuickConvertView: View {
                 HStack { ProgressView().controlSize(.small); Text("Preparing…") }
             }
             Button("Stop") { model.cancel() }
+                .keyboardShortcut(.cancelAction)
         }
     }
 
@@ -217,11 +239,13 @@ struct QuickConvertView: View {
                 }
                 .disabled(summary.undone || summary.outputs.isEmpty)
                 .help("Copy the files, then paste into Mail, Slack or Finder")
-                Button("Show in Finder") {
+                let finder = Button("Show in Finder") {
                     let existing = summary.outputs.filter { FileManager.default.fileExists(atPath: $0.path) }
                     if !existing.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(existing) }
                 }
                 .disabled(summary.undone || summary.outputs.isEmpty)
+                // Finder already opened on its own; keep a quiet button for when that window is gone.
+                if revealWhenDone { finder.buttonStyle(.borderless) } else { finder }
                 Button("Undo") {
                     state.undoing = true
                     Task {
@@ -304,6 +328,8 @@ struct QuickConvertView: View {
                 Spacer()
                 Menu {
                     SettingsLink { Text("Settings…") }
+                    Button("Check for Updates…") { Updater.shared.checkNow() }
+                        .disabled(!Updater.shared.canCheck)
                     if model.isRunning {
                         Button("Stop Queue") { model.cancel() }
                     } else if model.runnableCount > 0 {
@@ -313,10 +339,12 @@ struct QuickConvertView: View {
                     Button("Quit FileFormatter") { NSApp.terminate(nil) }
                 } label: {
                     Image(systemName: "gearshape")
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .accessibilityLabel("Settings and quit")
+                .help("Settings and Quit")
             }
         }
     }

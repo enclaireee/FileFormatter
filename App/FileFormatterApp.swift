@@ -10,7 +10,10 @@ struct FileFormatterApp: App {
         #if DEBUG
         AppSelfTest.runIfRequested()
         #endif
-        Task { @MainActor in StatusItemController.shared.start() }
+        Task { @MainActor in
+            StatusItemController.shared.start()
+            _ = Updater.shared  // starts Sparkle's scheduled checks
+        }
     }
 
     var body: some Scene {
@@ -21,17 +24,18 @@ struct FileFormatterApp: App {
         .defaultSize(width: 1_100, height: 720)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Add Files…") {
+                Button("Add Files or Folders…") {
                     model.showImporter = true
                 }
                 .keyboardShortcut("o", modifiers: .command)
+                .disabled(model.isRunning)
             }
             CommandMenu("Convert") {
                 Button("Convert Files") {
                     model.startRun()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(model.isRunning || model.runnableCount == 0)
+                .disabled(!model.canRun)
 
                 Button("Stop") {
                     model.cancel()

@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.compressSuffix) private var compressSuffix = "-small"
     @AppStorage(AppSettings.backgroundSuffix) private var backgroundSuffix = "-nobg"
     @AppStorage(AppSettings.hdBackground) private var hdBackground = true
+    @AppStorage(AppSettings.revealWhenDone) private var revealWhenDone = true
     @AppStorage(AppSettings.shelfEnabled) private var shelfEnabled = true
     @AppStorage("compress.strength") private var strength = CompressSettings.Strength.balanced
     @AppStorage("compress.targetMB") private var targetMB = 10.0
@@ -19,6 +20,7 @@ struct SettingsView: View {
     @State private var recorder: Any?
     @State private var hotkeyFailed = false
     @State private var opensAtLogin = AppSettings.opensAtLogin
+    @Bindable private var updater = Updater.shared
     @State private var loginError: String?
 
     private var version: String {
@@ -59,6 +61,9 @@ struct SettingsView: View {
                             .help(AppModel.shared.isBusy ? "Wait for the current conversion to finish" : "")
                     }
                 }
+                Toggle("Show results in Finder when done", isOn: $revealWhenDone)
+                Text("Applies to the window, menu bar and Finder Quick Actions. Watch folders never open Finder.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Keep metadata (camera, location, dates)", isOn: $keepMetadata)
                 Text("Compress always strips metadata to save space. The main window has its own switch.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -134,6 +139,22 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Updates") {
+                Toggle("Check for updates automatically", isOn: $updater.checksAutomatically)
+                Toggle("Download and install automatically", isOn: $updater.installsAutomatically)
+                    .disabled(!updater.checksAutomatically)
+                HStack {
+                    Text(updater.lastChecked.map { "Last checked \($0.formatted(.relative(presentation: .named)))" }
+                         ?? "Not checked yet")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check Now", action: updater.checkNow)
+                        .disabled(!updater.canCheck)
+                }
+                Text("Updates install when you quit FileFormatter.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("About") {
                 LabeledContent("Version") {
                     HStack {
@@ -146,7 +167,7 @@ struct SettingsView: View {
                         .help("Open-source notices, including FFmpeg (LGPL)")
                     }
                 }
-                Label("Everything runs on this Mac. No network, originals never deleted.", systemImage: "lock.shield")
+                Label("Your files never leave this Mac, and originals are never deleted. The only network use is checking for updates.", systemImage: "lock.shield")
                     .font(.callout)
                 HStack {
                     Text("Finder Quick Actions may need enabling first.")

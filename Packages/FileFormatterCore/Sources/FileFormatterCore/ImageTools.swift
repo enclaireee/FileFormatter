@@ -51,7 +51,7 @@ public enum ImageTools {
             croppedToInstancesExtent: cropToSubject
         )
         let ciImage = CIImage(cvPixelBuffer: buffer)
-        guard let result = CIContext().createCGImage(ciImage, from: ciImage.extent) else {
+        guard let result = ImageConverter.ciContext.createCGImage(ciImage, from: ciImage.extent) else {
             throw ConversionError.writeFailed("Could not render the cut-out image.")
         }
         return result
@@ -113,7 +113,7 @@ public enum ImageTools {
             kCIInputMaskImageKey: mask
         ])
         let space = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil } ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        return CIContext().createCGImage(cutout, from: source.extent, format: .RGBA8, colorSpace: space)
+        return ImageConverter.ciContext.createCGImage(cutout, from: source.extent, format: .RGBA8, colorSpace: space)
     }
 
     public static func encode(
@@ -129,49 +129,50 @@ public enum ImageTools {
             return
         }
 
-        let directory = destination.deletingLastPathComponent()
-        let manager = FileManager.default
-        func makeTemp() -> URL {
-            directory.appendingPathComponent(".fileformatter-\(UUID().uuidString)").appendingPathExtension(target.fileExtension)
-        }
-
-        var best: (url: URL, size: UInt64)?
-        defer { if let best { try? manager.removeItem(at: best.url) } }
-
-        // Returns true when the attempt fits; otherwise keeps it only if it is the smallest so far.
+        // Attempts stay in memory; only the winner is written.
+        var fitting: Data?
+        var smallest: Data?
+        var lastSize = 0
         func attempt(_ image: CGImage, _ quality: Double) throws -> Bool {
-            let temp = makeTemp()
-            try ImageConverter.encode(image: image, destination: temp, target: target, quality: quality, properties: properties)
-            let size = (try manager.attributesOfItem(atPath: temp.path)[.size] as? UInt64) ?? .max
-            if let old = best, old.size <= size, size > targetBytes {
-                try? manager.removeItem(at: temp)
-                return false
+            let data = try ImageConverter.data(image: image, target: target, quality: quality, properties: properties)
+            lastSize = data.count
+            if data.count <= targetBytes {
+                fitting = data
+                return true
             }
-            if let old = best { try? manager.removeItem(at: old.url) }
-            best = (temp, size)
-            return size <= targetBytes
+            if data.count < smallest?.count ?? .max { smallest = data }
+            return false
         }
 
-        // ponytail: linear search, ~8–14 encodes worst case; switch to bisection if large batches feel slow.
         var current = image
-        var fits = false
+        var fits: Bool
         if target.supportsQuality {
-            for q in [0.9, 0.8, 0.7, 0.6, 0.5, 0.4] where !fits {
-                fits = try attempt(current, q)
+            fits = try attempt(current, 0.9)
+            if !fits, try attempt(current, 0.4) {
+                // 0.4 fits and 0.9 does not: bisect for the highest quality that still fits.
+                var low = 0.4, high = 0.9
+                for _ in 0..<3 {
+                    let mid = (low + high) / 2
+                    let previous = fitting
+                    if try attempt(current, mid) { low = mid } else { high = mid; fitting = previous }
+                }
+                fits = true
             }
         } else {
             fits = try attempt(current, quality)
         }
         var steps = 0
-        while !fits, steps < 6, let smaller = downscale(current, by: 0.85) {
+        while !fits, steps < 4 {
+            // Bytes scale roughly with area, so shrink each side by the square root of the overshoot.
+            let factor = min(0.9, max(0.3, (Double(targetBytes) / Double(max(lastSize, 1))).squareRoot() * 0.95))
+            guard let smaller = downscale(current, by: factor) else { break }
             current = smaller
             steps += 1
             fits = try attempt(current, target.supportsQuality ? 0.6 : quality)
         }
 
-        guard let winner = best else { throw ConversionError.writeFailed("The image encoder did not finish.") }
-        try ImageConverter.install(temporary: winner.url, at: destination)
-        best = nil
+        guard let winner = fitting ?? smallest else { throw ConversionError.writeFailed("The image encoder did not finish.") }
+        try ImageConverter.write(winner, to: destination)
     }
 
     private static func downscale(_ image: CGImage, by factor: Double) -> CGImage? {

@@ -175,45 +175,58 @@ pub struct DuplicateGroup {
 pub fn hash_files(paths: Vec<String>) -> Vec<FileHash> {
     let mut hashes = Vec::new();
     for path in paths {
-        let file_path = Path::new(&path);
-        let Ok(metadata) = fs::metadata(file_path) else { continue };
+        let Ok(metadata) = fs::metadata(&path) else { continue };
         if !metadata.is_file() { continue }
-        let Ok(file) = fs::File::open(file_path) else { continue };
-        let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
-        let mut hasher = blake3::Hasher::new();
-        if std::io::copy(&mut reader, &mut hasher).is_err() { continue }
-        hashes.push(FileHash {
-            path,
-            hash: hasher.finalize().to_hex().to_string(),
-            byte_size: metadata.len(),
-        });
+        let Some(hash) = hash_file(Path::new(&path), None) else { continue };
+        hashes.push(FileHash { path, hash, byte_size: metadata.len() });
     }
     hashes
 }
 
+/// BLAKE3 of the whole file, or of its first `limit` bytes.
+fn hash_file(path: &Path, limit: Option<u64>) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let capacity = limit.unwrap_or(1 << 20).min(1 << 20) as usize;
+    let mut reader = std::io::BufReader::with_capacity(capacity, file).take(limit.unwrap_or(u64::MAX));
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut reader, &mut hasher).ok()?;
+    Some(hasher.finalize().to_hex().to_string())
+}
+
+const DUPLICATE_PREFIX: u64 = 64 * 1024;
+
 #[uniffi::export]
 pub fn find_duplicates(paths: Vec<String>) -> Vec<DuplicateGroup> {
     use std::collections::HashMap;
-    let mut by_hash: HashMap<String, Vec<(String, u64)>> = HashMap::new();
-    for item in hash_files(paths) {
-        if item.byte_size == 0 { continue }
-        by_hash
-            .entry(item.hash)
-            .or_default()
-            .push((item.path, item.byte_size));
+    // Only same-size files can match, and most differ in the first 64 KiB: full hashes are the last resort.
+    let mut by_size: HashMap<u64, Vec<String>> = HashMap::new();
+    for path in paths {
+        let Ok(metadata) = fs::metadata(&path) else { continue };
+        if !metadata.is_file() || metadata.len() == 0 { continue }
+        by_size.entry(metadata.len()).or_default().push(path);
     }
-    let mut groups: Vec<DuplicateGroup> = by_hash
-        .into_iter()
-        .filter_map(|(hash, entries)| {
-            if entries.len() < 2 { return None }
-            let byte_size = entries[0].1;
-            Some(DuplicateGroup {
-                hash,
-                byte_size,
-                paths: entries.into_iter().map(|(path, _)| path).collect(),
-            })
-        })
-        .collect();
+    let group = |paths: Vec<String>, limit: Option<u64>| -> Vec<(String, Vec<String>)> {
+        let mut by_hash: HashMap<String, Vec<String>> = HashMap::new();
+        for path in paths {
+            if let Some(hash) = hash_file(Path::new(&path), limit) {
+                by_hash.entry(hash).or_default().push(path);
+            }
+        }
+        by_hash.into_iter().filter(|(_, paths)| paths.len() > 1).collect()
+    };
+    let mut groups = Vec::new();
+    for (byte_size, paths) in by_size {
+        if paths.len() < 2 { continue }
+        // A file no longer than the prefix is fully hashed by the first pass.
+        let matches = if byte_size <= DUPLICATE_PREFIX {
+            group(paths, None)
+        } else {
+            group(paths, Some(DUPLICATE_PREFIX)).into_iter().flat_map(|(_, paths)| group(paths, None)).collect()
+        };
+        for (hash, paths) in matches {
+            groups.push(DuplicateGroup { hash, byte_size, paths });
+        }
+    }
     groups.sort_by(|a, b| {
         (b.byte_size * (b.paths.len() as u64 - 1))
             .cmp(&(a.byte_size * (a.paths.len() as u64 - 1)))
@@ -1281,18 +1294,20 @@ fn csv_to_json(input: &str, delimiter: u8) -> Result<serde_json::Value, Box<dyn 
         .flexible(true)
         .from_reader(input.as_bytes());
     let headers = reader.headers()?.clone();
+    let keys: Vec<String> = headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            if header.trim().is_empty() { format!("column_{}", index + 1) } else { header.to_string() }
+        })
+        .collect();
     let mut rows = Vec::new();
     for record in reader.records() {
         let record = record?;
         let mut object = serde_json::Map::new();
-        for (index, header) in headers.iter().enumerate() {
-            let key = if header.trim().is_empty() {
-                format!("column_{}", index + 1)
-            } else {
-                header.to_string()
-            };
+        for (index, key) in keys.iter().enumerate() {
             object.insert(
-                key,
+                key.clone(),
                 serde_json::Value::String(record.get(index).unwrap_or_default().to_string()),
             );
         }
@@ -1309,10 +1324,11 @@ fn json_to_csv(
         .as_array()
         .ok_or("CSV output requires a JSON array of objects")?;
     let mut headers: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for row in rows {
         let object = row.as_object().ok_or("CSV output requires an array of objects")?;
         for key in object.keys() {
-            if !headers.contains(key) {
+            if seen.insert(key.as_str()) {
                 headers.push(key.clone());
             }
         }
@@ -1662,6 +1678,28 @@ mod tests {
             "photo-web.webp"
         );
         assert_eq!(output_file_name("photo", "-web", "jpeg"), "photo-web.jpg");
+    }
+
+    #[test]
+    fn duplicate_check_reads_past_the_prefix() {
+        let contents = vec![7u8; 100 * 1024];
+        let mut late_change = contents.clone();
+        late_change[80 * 1024] = 8;
+        let files: Vec<NamedTempFile> = [&contents, &contents, &late_change]
+            .iter()
+            .map(|bytes| {
+                let mut file = NamedTempFile::new().expect("temp");
+                file.write_all(bytes).expect("write");
+                file.flush().expect("flush");
+                file
+            })
+            .collect();
+        let paths: Vec<String> = files.iter().map(|f| f.path().to_string_lossy().into_owned()).collect();
+
+        let groups = find_duplicates(paths.clone());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].paths, paths[..2].to_vec());
+        assert_eq!(groups[0].hash, hash_files(vec![paths[0].clone()])[0].hash);
     }
 
     #[test]

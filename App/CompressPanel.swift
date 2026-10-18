@@ -185,7 +185,7 @@ struct CompressPanel: View {
             if settings.strength == .target {
                 Picker("Size", selection: $settings.targetMB) {
                     ForEach(CompressSettings.presetsMB, id: \.self) { mb in
-                        Text(mb == 20 ? "Email" : "\(Int(mb)) MB").tag(mb)
+                        Text(mb == 20 ? "20 MB (Email)" : "\(Int(mb)) MB").tag(mb)
                     }
                 }
                 .pickerStyle(.segmented)

@@ -326,7 +326,7 @@ The Swift UI reads it through FFI. This is what makes "anything to anything" mai
 - Temp files 0600, cleaned on launch and cancel.
 - The M0 private build is unsandboxed: same-folder output requires directory access that a file-scoped sandbox grant does not provide. `Config/FileFormatter.entitlements` is reserved for a future sandboxed build with an explicit output-folder grant.
 - When sandboxing returns, security-scoped bookmarks cover watch folders and destinations, and bundled helpers carry `com.apple.security.inherit`.
-- No network entitlement, no analytics, no uploads.
+- No analytics, no uploads. The only network request is Sparkle's update check (D-027).
 - PDF JavaScript is never executed; OCR is local.
 - Resource guards: image pixel limits, memory pressure handling, disk-space preflight.
 
@@ -500,7 +500,7 @@ Rules: no agent edits another stream's directory; shared types live in `FileForm
 2. **Watch folders only run while the app is open** (menu bar), with optional launch-at-login. A background helper/agent is out of scope for v1.
 3. **English UI**, structured for localization; OCR auto-detects languages (English/Indonesian included).
 4. **FFmpeg is bundled** (~40–60 MB), so the app lands around 80–120 MB. This matches comparable converters.
-5. **No auto-update** in v1; a new build is copied over the old one. Sparkle can be added later.
+5. **Auto-update via Sparkle** from 0.7.0 (D-027); earlier installs are replaced by hand once.
 6. **Unsandboxed for the private build.** Same-folder output needs directory access that a file-scoped sandbox grant does not provide. Sandboxing returns with an explicit output-folder grant or broader distribution. This is recorded as D-004.
 6. **Private-use licensing**: the app itself can stay unlicensed/MIT; third-party notices are included.
 

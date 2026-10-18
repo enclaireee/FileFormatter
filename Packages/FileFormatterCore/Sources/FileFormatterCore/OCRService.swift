@@ -120,7 +120,7 @@ public actor OCRService {
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
             let bounds = page.bounds(for: .mediaBox)
-            let image = try PDFPageRenderer.render(source: source, pageNumber: index + 1)
+            let image = try PDFPageRenderer.render(page: page)
             let result = try recognize(image: image, languages: languages)
 
             let pageInfo = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary

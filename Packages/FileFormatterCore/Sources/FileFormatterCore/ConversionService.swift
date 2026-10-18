@@ -190,11 +190,25 @@ public actor ConversionService {
             throw ConversionError.cannotReadSource(item.displayName)
         }
 
+        // The name is claimed on the actor; the work runs off it so conversions overlap.
         let destination = uniqueDestination(for: item, in: options.outputDirectory)
         reserved.insert(destination.path)
         defer { reserved.remove(destination.path) }
-        var extras: [URL] = []
+        let extras = try await Self.perform(item, options: options, destination: destination, media: media)
 
+        let values = try? destination.resourceValues(forKeys: [.fileSizeKey])
+        let size = UInt64(values?.fileSize ?? 0)
+        return (destination, size, extras)
+    }
+
+    @concurrent
+    private static func perform(
+        _ item: ConversionItem,
+        options: ConversionOptions,
+        destination: URL,
+        media: MediaConverter
+    ) async throws -> [URL] {
+        var extras: [URL] = []
         switch (item.kind, options.target.family) {
         case (.pdf, _) where item.pdfMode == .merge:
             try PDFTools.merge(sources: item.mergeSources ?? [item.sourceURL], destination: destination)
@@ -253,6 +267,7 @@ public actor ConversionService {
             )
         case (.video, .image) where options.target == .gif:
             try await convertMedia(
+                media,
                 source: item.sourceURL,
                 destination: destination,
                 target: options.target,
@@ -261,6 +276,7 @@ public actor ConversionService {
             )
         case (.audio, .audio), (.video, .video), (.video, .audio):
             try await convertMedia(
+                media,
                 source: item.sourceURL,
                 destination: destination,
                 target: options.target,
@@ -284,10 +300,7 @@ public actor ConversionService {
                 "\(item.kind.label) → \(options.target.displayName)"
             )
         }
-
-        let values = try? destination.resourceValues(forKeys: [.fileSizeKey])
-        let size = UInt64(values?.fileSize ?? 0)
-        return (destination, size, extras)
+        return extras
     }
 
     public func undo(_ summary: RunSummary) async -> (removed: Int, failed: Int) {
@@ -358,7 +371,8 @@ public actor ConversionService {
         }
     }
 
-    private func convertMedia(
+    private static func convertMedia(
+        _ media: MediaConverter,
         source: URL,
         destination: URL,
         target: ConversionTarget,
@@ -414,7 +428,7 @@ public actor ConversionService {
         )
     }
 
-    private func searchablePDF(source: URL, destination: URL) async throws {
+    private static func searchablePDF(source: URL, destination: URL) async throws {
         let directory = destination.deletingLastPathComponent()
         let temporary = directory
             .appendingPathComponent(".fileformatter-\(UUID().uuidString)")
@@ -432,7 +446,7 @@ public actor ConversionService {
         try ImageConverter.install(temporary: temporary, at: destination)
     }
 
-    private func convertData(
+    private static func convertData(
         source: URL,
         destination: URL,
         target: ConversionTarget
@@ -456,7 +470,7 @@ public actor ConversionService {
         try ImageConverter.install(temporary: temporary, at: destination)
     }
 
-    private func extractOffice(
+    private static func extractOffice(
         source: URL,
         destination: URL,
         target: ConversionTarget

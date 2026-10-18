@@ -1,10 +1,11 @@
+import Accelerate
 import CWebP
 import CoreGraphics
 import Darwin
 import Foundation
 
 enum WebPEncoder {
-    static func convert(image: CGImage, destination: URL, quality: Double) throws {
+    static func data(image: CGImage, quality: Double) throws -> Data {
         let width = image.width
         let height = image.height
         guard width > 0, height > 0,
@@ -36,7 +37,11 @@ enum WebPEncoder {
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         let pixels = buffer.assumingMemoryBound(to: UInt8.self)
-        unpremultiply(pixels, width: width, height: height, bytesPerRow: bytesPerRow)
+        // Opaque images draw with alpha 255 everywhere, so there is nothing to undo.
+        if ![.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo) {
+            var bitmap = vImage_Buffer(data: buffer, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: bytesPerRow)
+            vImageUnpremultiplyData_RGBA8888(&bitmap, &bitmap, vImage_Flags(kvImageNoFlags))
+        }
 
         var output: UnsafeMutablePointer<UInt8>?
         var outputSize = 0
@@ -54,32 +59,6 @@ enum WebPEncoder {
         }
         defer { ff_webp_free(output) }
 
-        let directory = destination.deletingLastPathComponent()
-        let temporary = directory
-            .appendingPathComponent(".fileformatter-\(UUID().uuidString)")
-            .appendingPathExtension("webp")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-
-        try Data(bytes: output, count: outputSize).write(to: temporary, options: .atomic)
-        try ImageConverter.install(temporary: temporary, at: destination)
-    }
-
-    private static func unpremultiply(
-        _ pixels: UnsafeMutablePointer<UInt8>,
-        width: Int,
-        height: Int,
-        bytesPerRow: Int
-    ) {
-        for y in 0..<height {
-            let row = pixels.advanced(by: y * bytesPerRow)
-            for x in 0..<width {
-                let p = row.advanced(by: x * 4)
-                let alpha = Int(p[3])
-                guard alpha > 0, alpha < 255 else { continue }
-                p[0] = UInt8(min(255, Int(p[0]) * 255 / alpha))
-                p[1] = UInt8(min(255, Int(p[1]) * 255 / alpha))
-                p[2] = UInt8(min(255, Int(p[2]) * 255 / alpha))
-            }
-        }
+        return Data(bytes: output, count: outputSize)
     }
 }

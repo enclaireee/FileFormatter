@@ -3,51 +3,79 @@ import SwiftUI
 
 struct EmptyStateView: View {
     @Bindable var model: AppModel
+    var isDropTargeted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// A few common starting points; the full list is in the inspector's Preset picker.
+    private var starters: [Preset] {
+        ["web-images", "images-pdf", "office-markdown", "video-mp4"].compactMap { id in
+            Preset.builtIn.first { $0.id == id }
+        }
+    }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 22) {
             Spacer()
-            Image(systemName: "arrow.down.doc")
-                .font(.system(size: 54, weight: .light))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-
-            VStack(spacing: 6) {
-                Text("Drop files to convert")
-                    .font(.title2.weight(.semibold))
-                Text("Images, PDFs, CSV/JSON/XLSX/YAML/TOML, DOCX/PPTX, audio, and video. Every change previewed; originals stay safe.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Text("You can also drop files on the menu bar icon or right-click them in Finder.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            Button("Choose Files…") {
-                model.showImporter = true
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .keyboardShortcut("o", modifiers: .command)
-
-            HStack(spacing: 6) {
-                ForEach(["JPEG", "PNG", "WebP", "PDF", "CSV", "DOCX", "MP3", "MP4"], id: \.self) { format in
-                    Text(format)
-                        .font(.caption2.weight(.medium))
+            VStack(spacing: 14) {
+                Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
+                    .font(.system(size: 48, weight: .light))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(isDropTargeted ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    .contentTransition(.symbolEffect(.replace))
+                VStack(spacing: 6) {
+                    Text(isDropTargeted ? "Drop to add" : "Drop files or folders here")
+                        .font(.title2.weight(.semibold))
+                    Text("You'll see what each file becomes before anything is converted. Originals are never changed.")
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.quaternary, in: Capsule())
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 380)
                 }
+                Button("Choose Files…") {
+                    model.showImporter = true
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            .padding(36)
+            .frame(maxWidth: 520)
+            .background {
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(
+                        isDropTargeted ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary),
+                        style: StrokeStyle(lineWidth: 2, dash: [7, 5])
+                    )
+            }
+            .animation(reduceMotion ? nil : .default, value: isDropTargeted)
+
+            VStack(spacing: 10) {
+                Text("Start from a preset")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                FlowLayout(spacing: 8) {
+                    ForEach(starters) { preset in
+                        Toggle(isOn: Binding(
+                            get: { model.activePreset?.id == preset.id },
+                            set: { if $0 { model.apply(preset) } }
+                        )) {
+                            Label(preset.name, systemImage: preset.systemImage)
+                        }
+                        .toggleStyle(.button)
+                        .fixedSize()
+                    }
+                }
+                .frame(maxWidth: 520)
+                Text(model.activePreset.map { "\($0.name) is set. Drop files to use it." } ?? "Or just drop files; you can choose formats after.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            Text("No uploads. Nothing leaves this Mac.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
             Spacer()
+            Text("Everything stays on this Mac. You can also drop files on the menu bar icon or right-click them in Finder.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
+        .padding(32)
     }
 }

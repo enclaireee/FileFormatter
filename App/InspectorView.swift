@@ -5,43 +5,67 @@ struct InspectorView: View {
     @Bindable var model: AppModel
     @AppStorage(AppSettings.hdBackground) private var hdBackground = true
 
+    @Environment(\.openSettings) private var openSettings
+
+    private var usesQuality: Bool {
+        (model.hasKind(.image) && model.imageTarget.supportsQuality)
+            || (model.hasKind(.audio) && model.audioTarget.supportsQuality)
+            || model.hasKind(.video)
+    }
+
+    private var presetBinding: Binding<String> {
+        Binding(
+            get: { model.activePreset?.id ?? "custom" },
+            set: { id in
+                if let preset = Preset.builtIn.first(where: { $0.id == id }) {
+                    model.apply(preset)
+                }
+            }
+        )
+    }
+
+    private func percentLabel(_ title: String) -> some View {
+        LabeledContent(title) {
+            Text("\(Int(model.quality * 100))%").monospacedDigit()
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary)
+    }
+
     var body: some View {
         Form {
-            if model.isEmpty || model.hasKind(.image) || model.hasKind(.pdf) {
-                Section("Images") {
+            Section("Preset") {
+                Picker("Preset", selection: presetBinding) {
+                    Text("Custom").tag("custom")
+                    Divider()
+                    ForEach(Preset.builtIn) { preset in
+                        Label(preset.name, systemImage: preset.systemImage).tag(preset.id)
+                    }
+                }
+                caption("Sets formats and quality for every file type.")
+            }
+
+            if model.isEmpty {
+                Section {
+                    caption("Add files to see their options.")
+                }
+            }
+
+            if model.hasKind(.image) || model.hasKind(.pdf) {
+                Section(model.hasKind(.pdf) ? "Images and PDFs" : "Images") {
                     Picker("Convert to", selection: imageBinding) {
                         ForEach(ConversionTarget.imageTargets) { target in
                             Text(target.displayName).tag(target)
                         }
                     }
                     if model.imageTarget == .pdf {
-                        Text("Each image becomes a one-page PDF. Pages keep the source pixel dimensions.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if model.imageTarget.supportsQuality {
-                        LabeledContent("Quality") {
-                            Text("\(Int(model.quality * 100))%")
-                                .monospacedDigit()
-                        }
-                        Slider(value: $model.quality, in: 0.3...1.0)
-                    } else {
-                        Text("Lossless output · quality does not apply.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        caption("Each image becomes a one-page PDF. Pages keep the source pixel dimensions.")
+                    } else if !model.imageTarget.supportsQuality {
+                        caption("Lossless output. Quality does not apply.")
                     }
-                    Toggle("Preserve metadata", isOn: $model.preserveMetadata)
-
-                    Toggle("Remove background", isOn: $model.removeBackground)
-                    Text(!hdBackground || AppSettings.bundledBackgroundModel == nil
-                         ? "Cuts out the main subject with Apple Vision. Fails for files with no clear subject."
-                         : "Cuts out the subject with the HD model. Change it in Settings. Fails for files with no clear subject.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if model.removeBackground && model.imageTarget == .jpeg {
-                        Text("JPEG can't keep transparency. Choose PNG, WebP, or HEIC.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
+                    Toggle("Keep photo info (location, camera)", isOn: $model.preserveMetadata)
 
                     Picker("Resize", selection: $model.maxPixelSize) {
                         Text("Original").tag(Int?.none)
@@ -50,7 +74,7 @@ struct InspectorView: View {
                         }
                     }
                     if model.imageTarget.supportsQuality {
-                        Picker("Target size", selection: $model.imageTargetBytes) {
+                        Picker("Target file size", selection: $model.imageTargetBytes) {
                             Text("None").tag(UInt64?.none)
                             Text("5 MB").tag(UInt64?.some(5_000_000))
                             Text("2 MB").tag(UInt64?.some(2_000_000))
@@ -59,17 +83,38 @@ struct InspectorView: View {
                         }
                     }
 
+                    Toggle("Remove background", isOn: $model.removeBackground)
+                    caption(!hdBackground || AppSettings.bundledBackgroundModel == nil
+                            ? "Cuts out the main subject with Apple Vision. Fails for files with no clear subject."
+                            : "Cuts out the subject with the HD model. Change it in Settings. Fails for files with no clear subject.")
+                    if model.removeBackground && model.imageTarget == .jpeg {
+                        HStack {
+                            Label("JPEG can't keep the transparent background.", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Use PNG") {
+                                model.imageTarget = .png
+                                model.scheduleReplan()
+                            }
+                        }
+                    }
+
                     if model.hasKind(.pdf) {
-                        Picker("PDFs", selection: $model.pdfMode) {
+                        Picker("PDF pages become", selection: $model.pdfMode) {
                             ForEach(PDFMode.allCases) { Text($0.label).tag($0) }
                         }
-                        Text(model.pdfMode != .pages
-                             ? "\(model.pdfMode.label). The image target is ignored for PDFs."
-                             : (model.imageTarget.family == .image
-                                ? "PDF pages are rendered to this image format."
-                                : "Choose an image format to extract PDF pages."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        caption(model.pdfMode != .pages
+                                ? "\(model.pdfMode.label). The image format is ignored for PDFs."
+                                : (model.imageTarget.family == .image
+                                   ? "PDF pages are saved in this image format."
+                                   : "Choose an image format to extract PDF pages."))
+                        if model.pdfMode == .pages && model.imageTarget.family != .image {
+                            Button("Use PNG for Pages") {
+                                model.imageTarget = .png
+                                model.scheduleReplan()
+                            }
+                        }
                     }
                 }
             }
@@ -81,9 +126,7 @@ struct InspectorView: View {
                             Text(target.displayName).tag(target)
                         }
                     }
-                    Text("CSV and TSV are read as a table with a header row. JSON output is an array of objects; JSON to CSV requires the same shape.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    caption("CSV and TSV are read as a table with a header row. JSON output is an array of objects; JSON to CSV requires the same shape.")
                 }
             }
 
@@ -94,9 +137,7 @@ struct InspectorView: View {
                             Text(target.displayName).tag(target)
                         }
                     }
-                    Text("DOCX and PPTX keep headings, bold/italic, lists, tables, and images (images go to a <name>_files folder). Plain text stays text-only. Shapes and charts are not preserved.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    caption("DOCX and PPTX keep headings, bold/italic, lists, tables, and images (images go to a <name>_files folder). Plain text stays text-only. Shapes and charts are not preserved.")
                 }
             }
 
@@ -107,16 +148,7 @@ struct InspectorView: View {
                             Text(target.displayName).tag(target)
                         }
                     }
-                    if model.audioTarget.supportsQuality {
-                        LabeledContent("Quality") {
-                            Text("\(Int(model.quality * 100))%")
-                                .monospacedDigit()
-                        }
-                        Slider(value: $model.quality, in: 0.3...1.0)
-                    }
-                    Text("Audio tracks and metadata are written with FFmpeg. Lossless targets are FLAC, WAV, and AIFF.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    caption("Audio tracks and metadata are written with FFmpeg. Lossless targets are FLAC, WAV, and AIFF.")
                 }
             }
 
@@ -144,62 +176,39 @@ struct InspectorView: View {
                             }
                         }
                     }
-                    LabeledContent("Quality") {
-                        Text("\(Int(model.quality * 100))%")
-                            .monospacedDigit()
-                    }
-                    Slider(value: $model.quality, in: 0.3...1.0)
-                    Text("H.264 uses the hardware encoder. WebM uses VP9/Opus. Subtitles are copied where the container supports them.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    caption("H.264 uses the hardware encoder. WebM uses VP9/Opus. Subtitles are copied where the container supports them.")
                 }
             }
 
             if !unsupportedKinds.isEmpty {
                 Section("Other files") {
-                    Text("Not convertible yet: \(unsupportedKinds.joined(separator: ", ")). They stay in the queue as skipped.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    caption("Not convertible yet: \(unsupportedKinds.joined(separator: ", ")). They stay in the queue as skipped.")
+                }
+            }
+
+            if usesQuality {
+                Section("Quality") {
+                    percentLabel("Quality")
+                    Slider(value: $model.quality, in: 0.3...1.0)
                 }
             }
 
             Section("Output") {
-                TextField("Suffix", text: $model.suffix)
-                    .onSubmit { model.scheduleReplan() }
-                LabeledContent("Destination", value: "Same folder")
-            }
-
-            Section("Plan") {
-                if model.isPlanning {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Planning…")
-                            .foregroundStyle(.secondary)
-                    }
-                } else if model.isEmpty {
-                    Text("Add files to see their conversion plan.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    LabeledContent("Files", value: "\(model.items.count)")
-                    LabeledContent("Ready", value: "\(model.runnableCount)")
-                    ForEach(FidelityLevel.allCases, id: \.self) { level in
-                        let count = model.items.filter { $0.fidelity == level }.count
-                        if count > 0 {
-                            LabeledContent(level.label, value: "\(count)")
-                        }
+                LabeledContent("Saved") {
+                    HStack {
+                        Text(model.destinationDescription)
+                        Button("Change…") { openSettings() }
                     }
                 }
-            }
-
-            Section {
-                Text("Fidelity is predicted from the source and target. Lossless conversions preserve data; re-encoded files may lose detail or formatting.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                TextField("Add to name", text: $model.suffix)
+                    .onSubmit { model.scheduleReplan() }
+                if let example = model.outputExample {
+                    caption("Example: \(example)")
+                }
             }
         }
         .formStyle(.grouped)
+        .disabled(model.isRunning)
         .onChange(of: model.suffix) { _, _ in
             model.scheduleReplan()
         }

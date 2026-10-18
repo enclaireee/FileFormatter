@@ -35,13 +35,13 @@ struct CompletionSheet: View {
 
                 Text("Undo moves generated files to the Trash. Your originals are never deleted.")
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 340)
             }
 
             HStack {
-                Button("Reveal in Finder") {
+                Button("Show in Finder") {
                     model.revealLastOutputs()
                 }
                 .disabled(summary?.outputs.isEmpty ?? true)
@@ -101,7 +101,7 @@ struct CompletionSheet: View {
             if failedItems.count > 3 {
                 Text("and \(failedItems.count - 3) more…")
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: 360, alignment: .leading)

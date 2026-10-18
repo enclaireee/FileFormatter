@@ -15,6 +15,17 @@ final class AppModel {
         let message: String
     }
 
+    /// The inline banner above the queue: run results, stops, undo outcomes and hints. Replaces modal alerts for anything recoverable.
+    struct Notice: Identifiable {
+        enum Tone { case success, warning, info }
+        let id = UUID()
+        var tone: Tone
+        var title: String
+        var detail: String?
+        /// Set when the notice reports a run, so the banner can reveal, undo and retry.
+        var summary: RunSummary?
+    }
+
     var items: [ConversionItem] = []
     var warnings: [String] = []
     var imageTarget: ConversionTarget = .jpeg
@@ -33,7 +44,12 @@ final class AppModel {
 
     var isPlanning = false
     var isRunning = false
-    var selectedID: UUID?
+    var selection = Set<UUID>()
+    var notice: Notice?
+    /// The file being converted right now, for the progress line.
+    var currentItemName: String?
+    /// Output sizes of finished rows, read once when each file completes.
+    var outputSizes: [UUID: UInt64] = [:]
     var showImporter = false
     var showCompletion = false
     var showRename = false
@@ -72,6 +88,9 @@ final class AppModel {
                 && preset.videoTarget == videoTarget
                 && preset.suffix == suffix
                 && abs(preset.quality - quality) < 0.001
+                && !removeBackground && maxPixelSize == nil
+                && imageTargetBytes == nil && videoTargetBytes == nil
+                && pdfMode == .pages
         }
     }
 
@@ -83,7 +102,47 @@ final class AppModel {
         videoTarget = preset.videoTarget
         quality = preset.quality
         suffix = preset.suffix
+        // A preset is the whole recipe: clear the extras so the sidebar/inspector checkmark stays honest.
+        removeBackground = false
+        maxPixelSize = nil
+        imageTargetBytes = nil
+        videoTargetBytes = nil
+        pdfMode = .pages
         scheduleReplan()
+    }
+
+    /// Why Convert is disabled, in words, or nil when it can run.
+    var runBlockedReason: String? {
+        if isRunning { return "A conversion is running." }
+        if isPlanning { return "Preparing the files…" }
+        if items.isEmpty { return "Add files first." }
+        if runnableCount == 0 {
+            return items.contains { $0.status == .completed } ? "Everything is converted. Change a setting to convert again." : "Nothing here can be converted with these settings."
+        }
+        return nil
+    }
+
+    var canRun: Bool { runBlockedReason == nil }
+
+    var progress: Double {
+        totalToConvert == 0 ? 0 : Double(completedCount) / Double(totalToConvert)
+    }
+
+    /// Where files go, in words, for the Output section and the bottom bar.
+    var destinationDescription: String {
+        if AppSettings.bool(AppSettings.useFolder) {
+            return AppSettings.outputFolder().map { "In \($0.lastPathComponent)" } ?? "Output folder unavailable"
+        }
+        return "Next to the originals"
+    }
+
+    /// One planned output name, so the Output section can show a real example.
+    var outputExample: String? {
+        items.first { $0.status == .pending }.map { "\($0.displayName) → \($0.outputName)" }
+    }
+
+    func count(where predicate: (ItemStatus) -> Bool) -> Int {
+        items.filter { predicate($0.status) }.count
     }
 
     func target(for kind: FileKind) -> ConversionTarget? {
@@ -118,15 +177,18 @@ final class AppModel {
     }
 
     func addFiles(_ urls: [URL]) {
+        // Replanning mid-run would swap the rows the run loop is writing to.
+        guard !isRunning else {
+            inform(.info, "Wait for this conversion to finish", "Then drop the files again to add them.")
+            return
+        }
         Task {
             let expanded = await Self.expand(urls)
             guard !expanded.isEmpty else {
-                present(
-                    "No files found",
-                    "Drop images, PDFs, audio, video, Word or PowerPoint files, or data files (CSV, JSON, YAML, TOML, XLSX)."
-                )
+                inform(.warning, "No files found", "That folder is empty. Drop images, PDFs, audio, video, Office or data files.")
                 return
             }
+            guard !isRunning else { return }
             let existing = Set(items.map { $0.sourceURL.standardizedFileURL.path })
             let new = expanded.filter { !existing.contains($0.standardizedFileURL.path) }
             guard !new.isEmpty else { return }
@@ -138,7 +200,7 @@ final class AppModel {
         replanTask?.cancel()
         replanTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled, let self, !self.isRunning else { return }
             await plan(urls: self.items.map(\.sourceURL))
         }
     }
@@ -168,7 +230,8 @@ final class AppModel {
     var isBusy: Bool { isRunning || isQuickRunning }
 
     func startRun() {
-        guard !isRunning else { return }
+        guard canRun else { return }
+        notice = nil
         runTask = Task { await run() }
     }
 
@@ -182,27 +245,89 @@ final class AppModel {
         let pendingCount = items.filter { $0.status == .pending }.count
         guard pendingCount > 0 else { return }
 
+        replanTask?.cancel()
         isRunning = true
         totalToConvert = pendingCount
         completedCount = 0
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            currentItemName = nil
+        }
 
         let job = windowJob
         let tally = await execute(items, job: job) { index, status, output in
             self.items[index].status = status
             self.items[index].outputURL = output
+            if status == .converting { self.currentItemName = self.items[index].displayName }
             if status.isTerminal { self.completedCount += 1 }
+            if let output, status == .completed {
+                self.outputSizes[self.items[index].id] = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init)
+            }
         }
 
         let summary = tally.summary(job: job, items: items)
         try? await journal.save(summary)
-        if tally.cancelled {
-            present("Conversion cancelled", "\(tally.converted) file(s) finished before you stopped. The rest are still in the queue.")
-        } else {
-            NotificationService.shared.notify(summary)
-        }
+        if !tally.cancelled { NotificationService.shared.notify(summary) }
         lastSummary = summary
-        showCompletion = !tally.cancelled
+        showResult(summary, stopped: tally.cancelled)
+        if !tally.cancelled { revealIfWanted(summary) }
+    }
+
+    /// Opens Finder on a finished run's outputs when Settings asks for it. Watch-folder runs never call this.
+    func revealIfWanted(_ summary: RunSummary) {
+        guard AppSettings.bool(AppSettings.revealWhenDone), !summary.undone else { return }
+        let existing = summary.outputs.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if !existing.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(existing) }
+    }
+
+    /// Reports a finished window or queue-header run in the banner.
+    func showResult(_ summary: RunSummary, stopped: Bool = false) {
+        var parts: [String] = []
+        if summary.converted > 0 {
+            parts.append(summary.bytesSaved > 0
+                ? "\(ByteCount.string(UInt64(summary.bytesSaved))) saved"
+                : "\(ByteCount.string(summary.outputBytes)) written")
+        }
+        if summary.failed > 0 { parts.append("\(summary.failed) failed") }
+        if summary.skipped > 0 { parts.append("\(summary.skipped) skipped") }
+        let files = "\(summary.converted) file\(summary.converted == 1 ? "" : "s")"
+        let title: String
+        if stopped {
+            title = "Stopped · \(files) converted"
+            parts.append("the rest are still in the queue")
+        } else if summary.converted == 0 {
+            title = "Nothing was converted"
+        } else {
+            title = "\(files) converted"
+        }
+        notice = Notice(
+            tone: summary.failed > 0 || stopped || summary.converted == 0 ? .warning : .success,
+            title: title,
+            detail: parts.isEmpty ? nil : parts.joined(separator: " · "),
+            summary: summary
+        )
+    }
+
+    func inform(_ tone: Notice.Tone, _ title: String, _ detail: String? = nil) {
+        notice = Notice(tone: tone, title: title, detail: detail)
+    }
+
+    /// Failed rows go back to Ready so Convert picks them up again.
+    func retryFailed() {
+        guard !isRunning else { return }
+        for index in items.indices {
+            if case .failed = items[index].status { items[index].status = .pending }
+        }
+        notice = nil
+        startRun()
+    }
+
+    /// Drops converted rows; the run stays undoable from History.
+    func clearFinished() {
+        guard !isRunning else { return }
+        items.removeAll { $0.status == .completed }
+        selection.removeAll()
+        notice = nil
     }
 
     /// Plans and converts files without the window: menu bar, Finder services, watch folders.
@@ -258,7 +383,10 @@ final class AppModel {
         }
         try? await journal.save(summary)
         if !tally.cancelled { NotificationService.shared.notify(summary) }
-        if showsProgress { quickSummary = summary }
+        if showsProgress {
+            quickSummary = summary
+            if !tally.cancelled { revealIfWanted(summary) }
+        }
         return summary
     }
 
@@ -299,8 +427,8 @@ final class AppModel {
         }
     }
 
-    /// The one conversion loop. Stops between files when the surrounding task is cancelled;
-    /// ffmpeg is killed mid-file by MediaConverter's own cancellation handler.
+    /// The one conversion loop, a few files at a time. Cancelling the surrounding task stops new starts
+    /// and cancels files in flight; ffmpeg is killed mid-file by MediaConverter's own cancellation handler.
     private func execute(
         _ items: [ConversionItem],
         job: ConversionJob,
@@ -317,57 +445,99 @@ final class AppModel {
             }
             return tally
         }
+        var waiting: [(index: Int, options: ConversionOptions, heavy: Bool)] = []
         for index in items.indices where items[index].status == .pending {
-            if Task.isCancelled {
-                tally.cancelled = true
-                break
-            }
             let item = items[index]
             guard let target = job.target(for: item) else {
                 update(index, .skipped("No target for \(item.kind.label)"), nil)
                 continue
             }
-            update(index, .converting, nil)
-            do {
-                let result = try await service.convert(item, options: job.options(for: item, target: target))
-                tally.outputs.append(result.url)
-                tally.outputs.append(contentsOf: result.extras)
-                tally.fileNumbers += ([result.url] + result.extras).map(RunSummary.fileNumber)
-                tally.outputBytes += result.outputBytes
-                tally.converted += 1
-                update(index, .completed, result.url)
-            } catch {
-                if Task.isCancelled {
-                    tally.cancelled = true
-                    update(index, .pending, nil)
-                    break
+            let options = job.options(for: item, target: target)
+            // ffmpeg, CoreML, Vision and Quartz filters already fan out (or may not be thread-safe): one at a time.
+            let heavy = item.kind == .audio || item.kind == .video || options.removeBackground
+                || item.pdfMode == .searchable || item.pdfMode == .compress
+            waiting.append((index, options, heavy))
+        }
+
+        // ponytail: light work runs up to 4 wide, which bounds peak RAM from big decoded images.
+        let width = min(ProcessInfo.processInfo.activeProcessorCount, 4)
+        let service = service
+        typealias Outcome = (index: Int, heavy: Bool, result: Result<(url: URL, outputBytes: UInt64, extras: [URL]), any Error>)
+        await withTaskGroup(of: Outcome.self) { group in
+            var running = 0
+            var heavyRunning = false
+            while true {
+                while running < width, !Task.isCancelled,
+                      let next = waiting.firstIndex(where: { !$0.heavy || !heavyRunning }) {
+                    let (index, options, heavy) = waiting.remove(at: next)
+                    let item = items[index]
+                    running += 1
+                    if heavy { heavyRunning = true }
+                    update(index, .converting, nil)
+                    group.addTask {
+                        do {
+                            return (index, heavy, .success(try await service.convert(item, options: options)))
+                        } catch {
+                            return (index, heavy, .failure(error))
+                        }
+                    }
                 }
-                tally.failed += 1
-                update(index, .failed(error.localizedDescription), nil)
+                guard let outcome = await group.next() else { break }
+                running -= 1
+                if outcome.heavy { heavyRunning = false }
+                switch outcome.result {
+                case .success(let result):
+                    tally.outputs.append(result.url)
+                    tally.outputs.append(contentsOf: result.extras)
+                    tally.fileNumbers += ([result.url] + result.extras).map(RunSummary.fileNumber)
+                    tally.outputBytes += result.outputBytes
+                    tally.converted += 1
+                    update(outcome.index, .completed, result.url)
+                case .failure where Task.isCancelled:
+                    update(outcome.index, .pending, nil)
+                case .failure(let error):
+                    tally.failed += 1
+                    update(outcome.index, .failed(error.localizedDescription), nil)
+                }
             }
         }
+        if Task.isCancelled { tally.cancelled = true }
         return tally
     }
 
     func undoLastRun() async {
-        guard var summary = lastSummary, !summary.undone else { return }
+        guard let summary = notice?.summary ?? lastSummary else { return }
+        await undoRun(summary)
+    }
+
+    /// Undoes the run shown in the banner. Window-run rows go back to Ready; queue-header runs never touched the rows.
+    func undoRun(_ summary: RunSummary) async {
+        guard !summary.undone, !isRunning else { return }
         let result = await undo(summary)
-        summary.undone = true
-        lastSummary = summary
-
-        for index in items.indices {
-            guard case .completed = items[index].status else { continue }
-            items[index].status = .pending
-            items[index].outputURL = nil
+        if lastSummary?.id == summary.id {
+            lastSummary?.undone = true
+            let outputs = Set(summary.outputs.map(\.path))
+            for index in items.indices {
+                guard items[index].status == .completed,
+                      let url = items[index].outputURL, outputs.contains(url.path) else { continue }
+                items[index].status = .pending
+                items[index].outputURL = nil
+                outputSizes[items[index].id] = nil
+            }
         }
-
         showCompletion = false
-        present(
+        inform(
+            result.failed == 0 ? .info : .warning,
             "Run undone",
             result.failed == 0
-                ? "\(result.removed) generated file(s) moved to the Trash."
-                : "\(result.removed) file(s) moved to the Trash; \(result.failed) could not be removed."
+                ? "\(result.removed) new file\(result.removed == 1 ? "" : "s") moved to the Trash. Your originals weren't touched."
+                : "\(result.removed) moved to the Trash; \(result.failed) couldn't be removed (moved or renamed since)."
         )
+    }
+
+    func reveal(_ summary: RunSummary) {
+        guard !summary.outputs.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(summary.outputs)
     }
 
     func applyRenames(_ renames: [Renamer.Rename]) async throws -> RunSummary {
@@ -385,6 +555,7 @@ final class AppModel {
         )
         try? await journal.save(summary)
         await replace(pairs.map { ($0[0], $0[1]) })
+        revealIfWanted(summary)
         return summary
     }
 
@@ -417,12 +588,17 @@ final class AppModel {
         }
     }
 
-    func removeSelected() {
-        guard let selectedID, let index = items.firstIndex(where: { $0.id == selectedID }) else {
-            return
-        }
-        items.remove(at: index)
-        self.selectedID = nil
+    func remove(_ ids: Set<UUID>) {
+        guard !isRunning, !ids.isEmpty else { return }
+        items.removeAll { ids.contains($0.id) }
+        selection.subtract(ids)
+    }
+
+    func removeSelected() { remove(selection) }
+
+    /// Rows that can never convert with these settings (unsupported kinds).
+    var unsupportedIDs: Set<UUID> {
+        Set(items.filter { $0.fidelity == .unsupported }.map(\.id))
     }
 
     func addWatch(folder: URL, presetID: String) {
@@ -494,7 +670,9 @@ final class AppModel {
         guard !isRunning else { return }
         items.removeAll()
         warnings.removeAll()
-        selectedID = nil
+        selection.removeAll()
+        outputSizes.removeAll()
+        notice = nil
         lastSummary = nil
     }
 

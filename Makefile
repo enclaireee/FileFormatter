@@ -29,7 +29,7 @@ run: build
 selftest: build
 	./scripts/selftest.sh
 
-release:
+release: project
 	./scripts/package.sh
 
 clean:
