@@ -1,14 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// Menu bar icon + popover. Files dropped on the icon are staged and the popover opens.
+/// Menu bar icon + popover. Files dropped on the icon or on the drag-anywhere shelf are staged and the popover opens.
 @MainActor
-final class StatusItemController: NSObject {
+final class StatusItemController: NSObject, NSWindowDelegate, NSDraggingDestination, NSPopoverDelegate {
     static let shared = StatusItemController()
 
     private let state = QuickConvertState()
     private let popover = NSPopover()
+    private let shelf = DropShelf()
     private var item: NSStatusItem?
+    private var clickMonitors: [Any] = []
+    private var dragged = false
 
     func start() {
         guard item == nil else { return }
@@ -20,66 +23,84 @@ final class StatusItemController: NSObject {
             button.image = image
             button.target = self
             button.action = #selector(toggle)
-            let drop = DropView(frame: button.bounds)
-            drop.autoresizingMask = [.width, .height]
-            drop.onHighlight = { [weak button] in button?.isHighlighted = $0 }
-            drop.onClick = { [weak self] in self?.toggle() }
-            drop.onDrop = { [weak self] urls in
-                self?.state.stage(urls)
-                self?.show()
-            }
-            button.addSubview(drop)
+            // The status bar window forwards dragging messages to its delegate; sturdier than an overlay view.
+            button.window?.registerForDraggedTypes([.fileURL])
+            button.window?.delegate = self
         }
-        popover.behavior = .transient
+        // Not .transient: that closes the popover the moment a drag starts in Finder. Outside clicks close it instead.
+        popover.behavior = .applicationDefined
+        popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: QuickConvertView(state: state, model: .shared, reopen: { [weak self] in self?.show() })
         )
+        shelf.shouldShow = { [weak self] in !(self?.popover.isShown ?? true) }
+        shelf.onDrop = { [weak self] urls in
+            guard let self else { return }
+            state.stage(urls)
+            show(from: shelf.anchor)
+        }
+        shelf.start()
     }
 
     @objc private func toggle() {
         popover.isShown ? popover.performClose(nil) : show()
     }
 
-    private func show() {
-        guard !popover.isShown, let button = item?.button else { return }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    private func show(from view: NSView? = nil) {
+        guard let anchor = view ?? item?.button else { return }
+        if popover.isShown {
+            guard view != nil else { return }
+            popover.close()
+        }
+        // The shelf hugs the screen's right edge; pointing from its left edge keeps the popover on screen.
+        let rect = view == nil ? anchor.bounds : NSRect(x: 0, y: 0, width: 1, height: anchor.bounds.height)
+        popover.show(relativeTo: rect, of: anchor, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
     }
-}
 
-/// Transparent view over the status button that accepts file drops and forwards clicks.
-private final class DropView: NSView {
-    var onDrop: (([URL]) -> Void)?
-    var onHighlight: ((Bool) -> Void)?
-    var onClick: (() -> Void)?
+    // MARK: Popover
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        registerForDraggedTypes([.fileURL])
+    func popoverDidShow(_ notification: Notification) {
+        // A click elsewhere closes the popover; a drag that starts elsewhere (to drop files here) does not.
+        let events: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseUp]
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { [weak self] event in
+            let type = event.type
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                switch type {
+                case .leftMouseDown, .rightMouseDown: self.dragged = false
+                case .leftMouseDragged: self.dragged = true
+                default: if !self.dragged { self.popover.performClose(nil) }
+                }
+            }
+        }) { clickMonitors.append(monitor) }
     }
 
-    required init?(coder: NSCoder) { fatalError("unused") }
-
-    override func mouseDown(with event: NSEvent) { onClick?() }
-
-    private func urls(_ info: NSDraggingInfo) -> [URL] {
-        (info.draggingPasteboard.readObjects(forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    func popoverDidClose(_ notification: Notification) {
+        clickMonitors.forEach(NSEvent.removeMonitor)
+        clickMonitors = []
+        shelf.dismiss()
     }
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard !urls(sender).isEmpty else { return [] }
-        onHighlight?(true)
+    // MARK: Drops on the menu bar icon
+
+    func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !fileURLs(sender).isEmpty else { return [] }
+        item?.button?.highlight(true)
         return .copy
     }
 
-    override func draggingExited(_ sender: NSDraggingInfo?) { onHighlight?(false) }
+    func draggingExited(_ sender: NSDraggingInfo?) {
+        item?.button?.highlight(false)
+    }
 
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        onHighlight?(false)
-        let dropped = urls(sender)
-        guard !dropped.isEmpty else { return false }
-        onDrop?(dropped)
+    func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        item?.button?.highlight(false)
+        let urls = fileURLs(sender)
+        guard !urls.isEmpty else { return false }
+        shelf.dismiss()
+        state.stage(urls)
+        show()
         return true
     }
 }

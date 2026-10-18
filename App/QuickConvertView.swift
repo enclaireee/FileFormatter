@@ -120,20 +120,6 @@ struct QuickConvertView: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             QuickActionRow(urls: state.urls) { run($0) }
-            Menu("More formats…") {
-                ForEach(FormatFamily.allCases.filter { $0 != .other }, id: \.self) { family in
-                    let targets = ConversionTarget.allCases.filter { $0.family == family }
-                    if !targets.isEmpty {
-                        Section(family.rawValue.capitalized) {
-                            ForEach(targets) { target in
-                                Button(target.displayName) { run(.to(target)) }
-                            }
-                        }
-                    }
-                }
-            }
-            .menuStyle(.button)
-            .fixedSize()
         }
     }
 

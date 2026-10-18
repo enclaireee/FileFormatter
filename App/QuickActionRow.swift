@@ -1,28 +1,84 @@
 import SwiftUI
 
-/// One-click buttons for the likely actions on a set of files. Shared by the menu bar popover and the queue header.
+/// The likely actions for a set of files: one primary button, three tiles, the rest in "Other formats".
+/// Shared by the menu bar popover and (compact) the queue header.
 struct QuickActionRow: View {
     let urls: [URL]
-    var limit = 8
-    var controlSize: ControlSize = .regular
+    var compact = false
     let perform: (QuickAction) -> Void
 
     var body: some View {
-        let actions = QuickAction.suggestions(for: urls, limit: limit)
-        FlowLayout(spacing: 6) {
-            ForEach(actions) { action in
-                Button {
-                    perform(action)
-                } label: {
-                    Label(action.title, systemImage: action.systemImage)
-                        .lineLimit(1)
+        let suggested = QuickAction.suggestions(for: urls)
+        let shown = Array(suggested.prefix(4))
+        let more = suggested.dropFirst(4) + QuickAction.otherFormats(for: urls).filter { !shown.contains($0) }
+        Group {
+            if compact {
+                FlowLayout(spacing: 6) {
+                    ForEach(Array(shown.enumerated()), id: \.element) { index, action in
+                        if index == 0 {
+                            button(action).buttonStyle(.borderedProminent)
+                        } else {
+                            button(action)
+                        }
+                    }
+                    otherMenu(Array(more))
                 }
-                .controlSize(controlSize)
-                .help(action.title)
+                .controlSize(.small)
+            } else {
+                VStack(spacing: 8) {
+                    if let primary = shown.first {
+                        Button { run(primary) } label: {
+                            Label(primary.title, systemImage: primary.systemImage)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .keyboardShortcut(.defaultAction)
+                    }
+                    HStack(spacing: 8) {
+                        ForEach(shown.dropFirst()) { action in
+                            Button { run(action) } label: {
+                                VStack(spacing: 4) {
+                                    Image(systemName: action.systemImage).font(.title3)
+                                    Text(action.title).font(.caption).lineLimit(1).minimumScaleFactor(0.8)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                            .help(action.title)
+                        }
+                    }
+                    otherMenu(Array(more))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Quick actions")
+    }
+
+    private func button(_ action: QuickAction) -> some View {
+        Button { run(action) } label: {
+            Label(action.title, systemImage: action.systemImage).lineLimit(1)
+        }
+        .help(action.title)
+    }
+
+    @ViewBuilder
+    private func otherMenu(_ actions: [QuickAction]) -> some View {
+        if !actions.isEmpty {
+            Menu("Other formats") {
+                ForEach(actions) { action in
+                    Button(action.title) { run(action) }
+                }
+            }
+            .menuStyle(.button)
+            .fixedSize()
+        }
+    }
+
+    private func run(_ action: QuickAction) {
+        QuickAction.remember(action, for: urls)
+        perform(action)
     }
 }
 

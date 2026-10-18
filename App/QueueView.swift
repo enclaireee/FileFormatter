@@ -24,7 +24,7 @@ struct QueueView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !model.isRunning && !model.items.isEmpty {
-                    QuickActionRow(urls: model.items.map(\.sourceURL), limit: 5, controlSize: .small) { action in
+                    QuickActionRow(urls: model.items.map(\.sourceURL), compact: true) { action in
                         Task {
                             guard let summary = await model.quickRun(urls: model.items.map(\.sourceURL), action: action) else { return }
                             model.lastSummary = summary

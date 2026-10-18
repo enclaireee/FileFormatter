@@ -130,7 +130,8 @@ enum QuickAction: Hashable, Identifiable, Sendable {
             case .image: job.targets.image = target
             case .data: job.targets.data = target
             case .document: job.targets.document = target
-            case .audio: job.targets.audio = target
+            // Audio targets also apply to video files, so "MP3" on a movie extracts its sound.
+            case .audio: job.targets.audio = target; job.targets.video = target
             case .video: job.targets.video = target
             case .pdf: job.targets.image = .pdf; job.pdfMode = .merge
             case .other: break
@@ -169,8 +170,47 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         return job
     }
 
-    /// The likely actions for a set of dropped files, best first.
+    /// The likely actions for a set of dropped files, best first; the last one used for this kind leads.
     static func suggestions(for urls: [URL], limit: Int = 8) -> [QuickAction] {
+        var result = defaults(for: urls)
+        if let key = memoryKey(urls), let id = UserDefaults.standard.string(forKey: key),
+           let last = QuickAction(id: id), (result + otherFormats(for: urls)).contains(last) {
+            result.insert(last, at: 0)
+        }
+        var seen = Set<QuickAction>()
+        return Array(result.filter { seen.insert($0).inserted }.prefix(limit))
+    }
+
+    /// Remembers the choice so the same kind of file suggests it first next time.
+    static func remember(_ action: QuickAction, for urls: [URL]) {
+        guard let key = memoryKey(urls) else { return }
+        UserDefaults.standard.set(action.id, forKey: key)
+    }
+
+    // ponytail: keyed by the first file's kind; mixed drops just follow that file.
+    private static func memoryKey(_ urls: [URL]) -> String? {
+        guard let first = urls.first else { return nil }
+        let kind = kind(of: first)
+        return kind == .unknown ? nil : "lastQuickAction.\(kind.rawValue)"
+    }
+
+    /// Plain format conversions that make sense for the dropped kinds, for the "Other formats" menu.
+    static func otherFormats(for urls: [URL]) -> [QuickAction] {
+        let kinds = Set(urls.map(kind(of:)))
+        var families: [FormatFamily] = []
+        if kinds.contains(.image) || kinds.contains(.pdf) { families += [.image] }
+        if kinds.contains(.video) { families += [.video, .audio] }
+        if kinds.contains(.audio) { families += [.audio] }
+        if kinds.contains(.data) { families += [.data] }
+        if kinds.contains(.document) { families += [.document] }
+        var result = ConversionTarget.allCases
+            .filter { families.contains($0.family) && $0 != .searchablePDF && !($0 == .gif && !kinds.contains(.image)) }
+            .map(QuickAction.to)
+        if kinds.contains(.video) { result.append(.videoToGIF) }
+        return result
+    }
+
+    private static func defaults(for urls: [URL]) -> [QuickAction] {
         let extensions = Set(urls.map { $0.pathExtension.lowercased() })
         let kinds = Set(urls.map(kind(of:)))
         var result: [QuickAction] = []
@@ -197,9 +237,7 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         if kinds.contains(.document) {
             result += [.to(.markdown), .to(.html), .to(.text)]
         }
-
-        var seen = Set<QuickAction>()
-        return Array(result.filter { seen.insert($0).inserted }.prefix(limit))
+        return result
     }
 
     /// Cheap extension-based guess for UI suggestions; planning still uses Rust detection.

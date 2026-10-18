@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		07057B5061150F303062B725 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A711B18628B587689A06519 /* HistoryView.swift */; };
+		12342F99DF2914984A254A63 /* DropShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1592234909941C61FFF4E2 /* DropShelf.swift */; };
 		20B4073852F3353BBBF5C1C0 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4CB76D0E4B29DA462CD6937 /* SidebarView.swift */; };
 		297937C4C339F806B25245A6 /* FileFormatterCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3AC39FC343B95A2B3171DC1F /* FileFormatterCore */; };
 		3AB3587DA3AF0F33D7A216FE /* RenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 096820B4DD99528FBEF896F7 /* RenameSheet.swift */; };
@@ -48,6 +49,7 @@
 		635914C0C1345136E1BBB16C /* QuickActionRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActionRow.swift; sourceTree = "<group>"; };
 		6ACA2B6E6192D9DF188BC7C0 /* Notifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notifications.swift; sourceTree = "<group>"; };
 		6B203A208E8A3D096553CCD1 /* FileFormatterCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FileFormatterCore; path = Packages/FileFormatterCore; sourceTree = SOURCE_ROOT; };
+		6F1592234909941C61FFF4E2 /* DropShelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DropShelf.swift; sourceTree = "<group>"; };
 		8C68DFE4DD7F91774E341651 /* QueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueView.swift; sourceTree = "<group>"; };
 		8FDE750D897F77263E20594B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		9573968A0327816A0D338A59 /* CompletionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionSheet.swift; sourceTree = "<group>"; };
@@ -97,6 +99,7 @@
 				9573968A0327816A0D338A59 /* CompletionSheet.swift */,
 				8FDE750D897F77263E20594B /* ContentView.swift */,
 				1E73DEA2194F8D065E0310A8 /* DebugSelfTest.swift */,
+				6F1592234909941C61FFF4E2 /* DropShelf.swift */,
 				C4F34F0030D7EB78C05B05DC /* DuplicatesView.swift */,
 				451ED48A1E48E1DC444DB0D0 /* EmptyStateView.swift */,
 				5BA921E06FDB837F4F409F8B /* FidelityBadge.swift */,
@@ -240,6 +243,7 @@
 				BD080EDB636BA52E80128C54 /* CompletionSheet.swift in Sources */,
 				D5FBA9CEC20E4055F4D506D3 /* ContentView.swift in Sources */,
 				9610F3589A4B6C3C58C2F7F4 /* DebugSelfTest.swift in Sources */,
+				12342F99DF2914984A254A63 /* DropShelf.swift in Sources */,
 				6463770623C22B8FC5401707 /* DuplicatesView.swift in Sources */,
 				DDD2CD809AD817931F374E8C /* EmptyStateView.swift in Sources */,
 				8461A2F329F14298FCE74979 /* FidelityBadge.swift in Sources */,

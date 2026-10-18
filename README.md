@@ -6,8 +6,8 @@ A native, local-only batch file converter for macOS 26+ on Apple silicon.
 
 ## What works now
 
-- **Menu bar drop:** drop files on the menu bar icon (or click it and drop), then one click on a suggested action (Convert to JPEG, Remove Background, Compress, Make PDF, GIF, Extract Audio, …).
-- **Finder right-click:** Services → FileFormatter: Convert to JPEG/PNG, Remove Background, Compress Image, Make PDF, Convert Video to MP4, Make GIF, Extract Audio. A notification offers Show in Finder and Undo.
+- **Drag anywhere:** start dragging files and a "Drop to convert" pad appears at the top-right of the screen; drop there (or on the menu bar icon), then one click. The top suggestion is a big button, three more sit beside it, and "Other formats" lists only what fits the files. Your last choice for each kind of file comes first next time.
+- **Finder right-click:** Services → FileFormatter: Convert to JPEG, Remove Background, Compress (images, PDFs, video), Open in FileFormatter…. A notification offers Show in Finder and Undo.
 - Background removal with Apple Vision (subject lift), transparent PNG/WebP/HEIC output.
 - Image resize (longest side) and compress to a target file size.
 - PDF merge (PDFs and images into one file), split into pages, and compress (Quartz "Reduce File Size").
