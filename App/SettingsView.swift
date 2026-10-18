@@ -23,7 +23,8 @@ struct SettingsView: View {
             Section("Supported in this build") {
                 Text("Images: JPEG, PNG, HEIC, AVIF, WebP, TIFF")
                 Text("Data: CSV, TSV, JSON, YAML, TOML ↔ XLSX")
-                Text("Documents: images → one-page PDF; PDF → page images; DOCX/PPTX → Markdown, text, or HTML")
+                Text("Documents: images ↔ PDF; PDF → page images; DOCX/PPTX → Markdown, text, or HTML")
+                Text("Media: MP3, M4A, FLAC, WAV, AIFF, Opus, OGG; MP4, MOV, MKV, WebM")
                 Text("More families arrive in the next milestones.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

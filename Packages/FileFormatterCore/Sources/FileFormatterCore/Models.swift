@@ -28,10 +28,24 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
     case markdown
     case text
     case html
+    case searchablePDF
+    case mp3
+    case m4a
+    case flac
+    case wav
+    case aiff
+    case opus
+    case ogg
+    case mp4
+    case mov
+    case mkv
+    case webm
 
     public static let imageTargets: [ConversionTarget] = [.jpeg, .png, .heic, .avif, .webp, .tiff, .pdf]
     public static let dataTargets: [ConversionTarget] = [.csv, .tsv, .json, .yaml, .toml, .xlsx]
     public static let documentTargets: [ConversionTarget] = [.markdown, .text, .html]
+    public static let audioTargets: [ConversionTarget] = [.mp3, .m4a, .flac, .wav, .aiff, .opus, .ogg]
+    public static let videoTargets: [ConversionTarget] = [.mp4, .mov, .mkv, .webm]
 
     public var id: String { rawValue }
 
@@ -53,6 +67,18 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .markdown: "Markdown"
         case .text: "Plain Text"
         case .html: "HTML"
+        case .searchablePDF: "Searchable PDF"
+        case .mp3: "MP3"
+        case .m4a: "M4A (AAC)"
+        case .flac: "FLAC"
+        case .wav: "WAV"
+        case .aiff: "AIFF"
+        case .opus: "Opus"
+        case .ogg: "OGG Vorbis"
+        case .mp4: "MP4 (H.264)"
+        case .mov: "QuickTime (H.264)"
+        case .mkv: "MKV (H.264)"
+        case .webm: "WebM (VP9)"
         }
     }
 
@@ -60,6 +86,7 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         switch self {
         case .markdown: "md"
         case .text: "txt"
+        case .searchablePDF: "pdf"
         default: rawValue
         }
     }
@@ -82,6 +109,18 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .markdown: UTType(filenameExtension: "md") ?? .plainText
         case .text: .plainText
         case .html: .html
+        case .searchablePDF: .pdf
+        case .mp3: .mp3
+        case .m4a: .mpeg4Audio
+        case .flac: UTType(filenameExtension: "flac") ?? .audio
+        case .wav: .wav
+        case .aiff: .aiff
+        case .opus: UTType(filenameExtension: "opus") ?? .audio
+        case .ogg: UTType(filenameExtension: "ogg") ?? .audio
+        case .mp4: .mpeg4Movie
+        case .mov: .quickTimeMovie
+        case .mkv: UTType(filenameExtension: "mkv") ?? .movie
+        case .webm: UTType(filenameExtension: "webm") ?? .movie
         }
     }
 
@@ -90,15 +129,18 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .jpeg, .png, .heic, .avif, .webp, .tiff: .image
         case .csv, .tsv, .json, .yaml, .toml, .xlsx: .data
         case .pdf: .pdf
-        case .markdown, .text, .html: .document
+        case .markdown, .text, .html, .searchablePDF: .document
+        case .mp3, .m4a, .flac, .wav, .aiff, .opus, .ogg: .audio
+        case .mp4, .mov, .mkv, .webm: .video
         }
     }
 
     public var supportsQuality: Bool {
         switch self {
-        case .jpeg, .heic, .avif, .webp: true
+        case .jpeg, .heic, .avif, .webp, .mp3, .m4a, .opus, .ogg,
+             .mp4, .mov, .mkv, .webm: true
         case .png, .tiff, .csv, .tsv, .json, .yaml, .toml, .xlsx, .pdf,
-             .markdown, .text, .html: false
+             .markdown, .text, .html, .searchablePDF, .flac, .wav, .aiff: false
         }
     }
 }
@@ -183,6 +225,7 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
     public var outputURL: URL?
     public let pageIndex: Int?
     public let pageCount: Int?
+    public let ocrPDF: Bool
 
     public init(
         id: UUID = UUID(),
@@ -196,7 +239,8 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         status: ItemStatus = .pending,
         outputURL: URL? = nil,
         pageIndex: Int? = nil,
-        pageCount: Int? = nil
+        pageCount: Int? = nil,
+        ocrPDF: Bool = false
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -210,6 +254,7 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         self.outputURL = outputURL
         self.pageIndex = pageIndex
         self.pageCount = pageCount
+        self.ocrPDF = ocrPDF
     }
 }
 
@@ -227,15 +272,21 @@ public struct TargetRecipe: Sendable {
     public var image: ConversionTarget
     public var data: ConversionTarget
     public var document: ConversionTarget
+    public var audio: ConversionTarget
+    public var video: ConversionTarget
 
     public init(
         image: ConversionTarget = .jpeg,
         data: ConversionTarget = .json,
-        document: ConversionTarget = .markdown
+        document: ConversionTarget = .markdown,
+        audio: ConversionTarget = .mp3,
+        video: ConversionTarget = .mp4
     ) {
         self.image = image
         self.data = data
         self.document = document
+        self.audio = audio
+        self.video = video
     }
 
     public func target(for kind: FileKind) -> ConversionTarget? {
@@ -243,6 +294,8 @@ public struct TargetRecipe: Sendable {
         case .image: image
         case .data: data
         case .document: document
+        case .audio: audio
+        case .video: video
         default: nil
         }
     }

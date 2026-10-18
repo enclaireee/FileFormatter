@@ -10,6 +10,32 @@ struct Preset: Identifiable, Hashable, Sendable {
     let documentTarget: ConversionTarget
     let quality: Double
     let suffix: String
+    let audioTarget: ConversionTarget
+    let videoTarget: ConversionTarget
+
+    init(
+        id: String,
+        name: String,
+        systemImage: String,
+        imageTarget: ConversionTarget,
+        dataTarget: ConversionTarget,
+        documentTarget: ConversionTarget,
+        quality: Double,
+        suffix: String,
+        audioTarget: ConversionTarget = .mp3,
+        videoTarget: ConversionTarget = .mp4
+    ) {
+        self.id = id
+        self.name = name
+        self.systemImage = systemImage
+        self.imageTarget = imageTarget
+        self.dataTarget = dataTarget
+        self.documentTarget = documentTarget
+        self.quality = quality
+        self.suffix = suffix
+        self.audioTarget = audioTarget
+        self.videoTarget = videoTarget
+    }
 }
 
 extension Preset {
@@ -83,6 +109,50 @@ extension Preset {
             documentTarget: .markdown,
             quality: 0.85,
             suffix: "-xlsx"
+        ),
+        Preset(
+            id: "audio-m4a",
+            name: "Audio for iPhone",
+            systemImage: "waveform",
+            imageTarget: .jpeg,
+            dataTarget: .json,
+            documentTarget: .markdown,
+            quality: 0.80,
+            suffix: "-audio",
+            audioTarget: .m4a
+        ),
+        Preset(
+            id: "audio-flac",
+            name: "Lossless Audio",
+            systemImage: "waveform.badge.checkmark",
+            imageTarget: .jpeg,
+            dataTarget: .json,
+            documentTarget: .markdown,
+            quality: 1.0,
+            suffix: "-lossless",
+            audioTarget: .flac
+        ),
+        Preset(
+            id: "video-mp4",
+            name: "Video H.264",
+            systemImage: "film",
+            imageTarget: .jpeg,
+            dataTarget: .json,
+            documentTarget: .markdown,
+            quality: 0.80,
+            suffix: "-h264",
+            videoTarget: .mp4
+        ),
+        Preset(
+            id: "video-webm",
+            name: "WebM VP9",
+            systemImage: "film.stack",
+            imageTarget: .jpeg,
+            dataTarget: .json,
+            documentTarget: .markdown,
+            quality: 0.70,
+            suffix: "-webm",
+            videoTarget: .webm
         ),
         Preset(
             id: "office-markdown",

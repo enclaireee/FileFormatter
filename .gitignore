@@ -6,6 +6,11 @@ rust/target/
 Packages/*/.build/
 Packages/FileFormatterRust/Vendor/*.a
 Packages/FileFormatterCore/Vendor/*.a
+vendor/ffmpeg/bin/
+vendor/ffmpeg/lib/
+vendor/ffmpeg/share/
+vendor/ffmpeg/include/
+build/ffmpeg/
 Packages/FileFormatterRust/Vendor/*.xcframework/
 DerivedData/
 xcuserdata/

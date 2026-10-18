@@ -525,6 +525,122 @@ fileprivate struct FfiConverterString: FfiConverter {
 }
 
 
+public struct DuplicateGroup: Equatable, Hashable {
+    public var hash: String
+    public var byteSize: UInt64
+    public var paths: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(hash: String, byteSize: UInt64, paths: [String]) {
+        self.hash = hash
+        self.byteSize = byteSize
+        self.paths = paths
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DuplicateGroup: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDuplicateGroup: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DuplicateGroup {
+        return
+            try DuplicateGroup(
+                hash: FfiConverterString.read(from: &buf), 
+                byteSize: FfiConverterUInt64.read(from: &buf), 
+                paths: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DuplicateGroup, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.hash, into: &buf)
+        FfiConverterUInt64.write(value.byteSize, into: &buf)
+        FfiConverterSequenceString.write(value.paths, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDuplicateGroup_lift(_ buf: RustBuffer) throws -> DuplicateGroup {
+    return try FfiConverterTypeDuplicateGroup.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDuplicateGroup_lower(_ value: DuplicateGroup) -> RustBuffer {
+    return FfiConverterTypeDuplicateGroup.lower(value)
+}
+
+
+public struct FileHash: Equatable, Hashable {
+    public var path: String
+    public var hash: String
+    public var byteSize: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, hash: String, byteSize: UInt64) {
+        self.path = path
+        self.hash = hash
+        self.byteSize = byteSize
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FileHash: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFileHash: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FileHash {
+        return
+            try FileHash(
+                path: FfiConverterString.read(from: &buf), 
+                hash: FfiConverterString.read(from: &buf), 
+                byteSize: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FileHash, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterString.write(value.hash, into: &buf)
+        FfiConverterUInt64.write(value.byteSize, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFileHash_lift(_ buf: RustBuffer) throws -> FileHash {
+    return try FfiConverterTypeFileHash.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFileHash_lower(_ value: FileHash) -> RustBuffer {
+    return FfiConverterTypeFileHash.lower(value)
+}
+
+
 public struct FileInfo: Equatable, Hashable {
     public var path: String
     public var fileName: String
@@ -1068,6 +1184,56 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeDuplicateGroup: FfiConverterRustBuffer {
+    typealias SwiftType = [DuplicateGroup]
+
+    public static func write(_ value: [DuplicateGroup], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeDuplicateGroup.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DuplicateGroup] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [DuplicateGroup]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeDuplicateGroup.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFileHash: FfiConverterRustBuffer {
+    typealias SwiftType = [FileHash]
+
+    public static func write(_ value: [FileHash], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFileHash.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FileHash] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FileHash]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFileHash.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePlanItem: FfiConverterRustBuffer {
     typealias SwiftType = [PlanItem]
 
@@ -1132,6 +1298,22 @@ public func extractOffice(inputPath: String, outputPath: String, targetExtension
     )
 }
 }
+public func findDuplicates(paths: [String]) -> [DuplicateGroup]  {
+    return try!  FfiConverterSequenceTypeDuplicateGroup.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_fileformatter_core_fn_func_find_duplicates(
+        FfiConverterSequenceString.lower(paths),uniffiCallStatus
+    )
+})
+}
+public func hashFiles(paths: [String]) -> [FileHash]  {
+    return try!  FfiConverterSequenceTypeFileHash.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_fileformatter_core_fn_func_hash_files(
+        FfiConverterSequenceString.lower(paths),uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -1161,6 +1343,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_fileformatter_core_checksum_func_extract_office() != 13384) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_fileformatter_core_checksum_func_find_duplicates() != 12234) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_fileformatter_core_checksum_func_hash_files() != 5292) {
         return InitializationResult.apiChecksumMismatch
     }
 

@@ -269,6 +269,16 @@ RustBuffer uniffi_fileformatter_core_fn_func_detect_file(RustBuffer path, RustCa
 void uniffi_fileformatter_core_fn_func_extract_office(RustBuffer input_path, RustBuffer output_path, RustBuffer target_extension, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_FIND_DUPLICATES
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_FIND_DUPLICATES
+RustBuffer uniffi_fileformatter_core_fn_func_find_duplicates(RustBuffer paths, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_HASH_FILES
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_HASH_FILES
+RustBuffer uniffi_fileformatter_core_fn_func_hash_files(RustBuffer paths, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_FILEFORMATTER_CORE_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_FILEFORMATTER_CORE_RUSTBUFFER_ALLOC
 RustBuffer ffi_fileformatter_core_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -556,6 +566,18 @@ uint16_t uniffi_fileformatter_core_checksum_func_detect_file(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_EXTRACT_OFFICE
 #define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_EXTRACT_OFFICE
 uint16_t uniffi_fileformatter_core_checksum_func_extract_office(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_FIND_DUPLICATES
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_FIND_DUPLICATES
+uint16_t uniffi_fileformatter_core_checksum_func_find_duplicates(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_HASH_FILES
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_HASH_FILES
+uint16_t uniffi_fileformatter_core_checksum_func_hash_files(void
     
 );
 #endif

@@ -15,7 +15,15 @@
 
 Deliberate M0 deviation: the private build is **unsandboxed**; see D-004 in `docs/DECISIONS.md`. The Rust bridge links a static archive through a C module rather than a SwiftPM `binaryTarget`; see D-002.
 
-**Next:** M2 — audio.
+**M2 — Audio: complete (18 Oct 2026).** LGPL FFmpeg 8.0.1 helper is built and bundled. MP3, M4A/AAC, FLAC, WAV, AIFF, Opus, and OGG Vorbis convert through `MediaConverter`, with metadata/chapter mapping, progress, cancellation, and a 1-second sine test across M4A/MP3/FLAC plus an app-bundle audio self-test.
+
+**M3 — Video: complete (18 Oct 2026).** MP4/MOV/MKV use hardware H.264 and WebM uses VP9/Opus. Audio tracks, metadata, chapters, and subtitles are mapped where the container supports them. The media suite covers MP4 → WebM.
+
+**M4 — OCR and quick actions: complete (18 Oct 2026).** Vision recognizes text and embeds an invisible layer into searchable PDFs, verified by PDF text extraction and an end-to-end PDF → searchable PDF test. Finder Services, open-with queueing, and a menu bar extra are wired. App Intents/Shortcuts and Finder Sync remain later enhancements.
+
+**M5 — Watch folders and duplicates: complete (18 Oct 2026).** DispatchSource folder watchers debounce, stability-check, and auto-convert with a chosen preset; watch rules persist. Duplicate finder hashes with BLAKE3, groups byte-identical files, and moves extras to the Trash.
+
+**M6 — Release: complete (18 Oct 2026).** Version 0.4.0 produces a signed `.app`, DMG, zip, and checksums. Helpers and third-party licenses are bundled and re-signed. Sandboxing and notarization remain deferred for the private build.
 
 ## 0. Decisions locked
 
@@ -508,6 +516,13 @@ Rules: no agent edits another stream's directory; shared types live in `FileForm
 If this plan is approved, I will start with M0 and keep the app runnable after every milestone.
 
 ---
+
+## Appendix B — Release status (0.4.0)
+
+- Build: `make test` passes 15 Swift tests and 13 Rust tests plus the in-app self-test (WebP, CSV→JSON, WAV→M4A, journal, undo).
+- Package: `make release` produces `dist/FileFormatter-0.4.0.dmg`, a zip, and checksums.
+- Helpers: LGPL FFmpeg 8.0.1 (`ffmpeg`, `ffprobe`) and libwebp, signed ad-hoc and bundled with licenses.
+- Known limits: unsandboxed/adhoc-signed private build; no notarization; no PDF merge/split/compression; Office text only; no App Intents/Shortcuts or Finder Sync; visual QA still pending because screen capture is unavailable.
 
 ## Appendix A — Research inputs
 

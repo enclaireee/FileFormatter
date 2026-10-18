@@ -10,13 +10,15 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
     ENABLE_HARDENED_RUNTIME: YES
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     DEAD_CODE_STRIPPING: YES
-    MARKETING_VERSION: "0.2.0"
+    MARKETING_VERSION: "0.4.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   FileFormatter:
@@ -37,6 +39,28 @@ targets:
     dependencies:
       - package: FileFormatterCore
         product: FileFormatterCore
+    postBuildScripts:
+      - name: Bundle FFmpeg Helpers
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          HELPERS="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Helpers"
+          mkdir -p "$HELPERS"
+          if [ -x "$SRCROOT/vendor/ffmpeg/bin/ffmpeg" ]; then
+            cp -f "$SRCROOT/vendor/ffmpeg/bin/ffmpeg" "$HELPERS/ffmpeg"
+            cp -f "$SRCROOT/vendor/ffmpeg/bin/ffprobe" "$HELPERS/ffprobe"
+            chmod +x "$HELPERS/ffmpeg" "$HELPERS/ffprobe"
+            codesign --force --sign - "$HELPERS/ffmpeg" "$HELPERS/ffprobe" || true
+          else
+            echo "warning: vendor/ffmpeg/bin missing; media conversion will not work"
+          fi
+          LICENSES="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Licenses"
+          mkdir -p "$LICENSES"
+          cp -f "$SRCROOT/vendor/ffmpeg/COPYING.LGPLv2.1" "$LICENSES/" 2>/dev/null || true
+          cp -f "$SRCROOT/vendor/ffmpeg/BUILD-INFO.txt" "$LICENSES/" 2>/dev/null || true
+          cp -f "$SRCROOT/docs/THIRD_PARTY.md" "$LICENSES/" 2>/dev/null || true
+          cp -R "$SRCROOT/docs/licenses/." "$LICENSES/" 2>/dev/null || true
+          codesign --force --deep --sign - "$TARGET_BUILD_DIR/$WRAPPER_NAME" || true
 packages:
   FileFormatterCore:
     path: Packages/FileFormatterCore

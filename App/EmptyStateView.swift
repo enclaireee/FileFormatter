@@ -27,7 +27,7 @@ struct EmptyStateView: View {
             .keyboardShortcut("o", modifiers: .command)
 
             HStack(spacing: 6) {
-                ForEach(["JPEG", "PNG", "WebP", "PDF", "CSV", "JSON", "DOCX", "XLSX"], id: \.self) { format in
+                ForEach(["JPEG", "PNG", "WebP", "PDF", "CSV", "DOCX", "MP3", "MP4"], id: \.self) { format in
                     Text(format)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)

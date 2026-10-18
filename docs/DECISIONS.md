@@ -79,3 +79,24 @@ CSV/JSON arrays of objects can be written to XLSX with `rust_xlsxwriter`. Binary
 ## D-017 — Presets are outcome-based, applied in the sidebar
 
 Presets set the per-family targets, quality, and suffix rather than encoding codec details. The sidebar shows a checkmark when the current recipe matches. Presets do not bypass preview: applying one replans the queue.
+
+
+## D-018 — LGPL FFmpeg helper and media backend
+
+FFmpeg 8.0.1 is built with `--disable-gpl --disable-nonfree --disable-version3`, VideoToolbox/AudioToolbox, libmp3lame, libopus, libvorbis, libvpx, and libdav1d. The static binaries live in `vendor/ffmpeg/bin`, are copied into `Contents/Resources/Helpers`, and are ad-hoc signed. `MediaConverter` drives ffmpeg with argument arrays, a scrubbed PATH, progress parsing, cancellation, and a stderr tail. GPL encoders (x264/x265) are never used; H.264/HEVC encoding goes through VideoToolbox.
+
+## D-019 — OCR is local and embedded invisibly
+
+Vision performs on-device text recognition. Searchable PDFs redraw the original page (vector or image) and add an invisible Core Text layer at Vision's bounding boxes. This preserves the page's appearance while making the text selectable. OCR is triggered by the PDF OCR toggle, not for every PDF by default.
+
+## D-020 — Watch folders are foreground-only
+
+A `DispatchSource` monitors each watched folder while FileFormatter runs. Events debounce for ~0.9 s, files must be size/mtime-stable, and processed keys prevent duplicate runs. Rules persist in Application Support and can be paused per folder. No background agent or login item is installed in 0.4.0.
+
+## D-021 — Duplicate detection uses BLAKE3
+
+The Rust core hashes files in 1 MB buffered chunks with BLAKE3, filters empty files, groups by hash, and sorts by reclaimable bytes. The UI keeps the first path in a group and moves the rest to the Trash. Hashing is chunked but not yet cancellable mid-file.
+
+## D-022 — Release is ad-hoc signed and unsandboxed
+
+`make release` builds arm64-only, bundles and re-signs helpers, creates a DMG and zip, and writes checksums. No Developer ID exists, so Gatekeeper requires right-click → Open on another Mac. Sandboxing is deferred (D-004); notarization is a one-command change once a Developer ID exists.

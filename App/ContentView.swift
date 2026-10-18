@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 
 enum SidebarSelection: Hashable {
     case queue
+    case watchFolders
+    case duplicates
     case history
 }
 
@@ -16,6 +18,8 @@ struct ContentView: View {
         [
             .image,
             .pdf,
+            .audio,
+            .movie,
             .commaSeparatedText,
             UTType(filenameExtension: "tsv") ?? .text,
             .json,
@@ -24,7 +28,11 @@ struct ContentView: View {
             UTType(filenameExtension: "docx") ?? .data,
             UTType(filenameExtension: "pptx") ?? .data,
             UTType(filenameExtension: "xlsx") ?? .data,
-            UTType(filenameExtension: "xls") ?? .data
+            UTType(filenameExtension: "xls") ?? .data,
+            UTType(filenameExtension: "flac") ?? .audio,
+            UTType(filenameExtension: "mkv") ?? .movie,
+            UTType(filenameExtension: "webm") ?? .movie,
+            UTType(filenameExtension: "opus") ?? .audio
         ]
     }
 
@@ -105,6 +113,10 @@ struct ContentView: View {
         switch selection ?? .queue {
         case .queue:
             queueDetail
+        case .watchFolders:
+            WatchFoldersView(model: model)
+        case .duplicates:
+            DuplicatesView()
         case .history:
             HistoryView()
         }

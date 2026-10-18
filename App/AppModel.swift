@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class AppModel {
+    static let shared = AppModel()
+
     struct AlertPayload: Identifiable {
         let id = UUID()
         let title: String
@@ -18,9 +20,12 @@ final class AppModel {
     var imageTarget: ConversionTarget = .jpeg
     var dataTarget: ConversionTarget = .json
     var documentTarget: ConversionTarget = .markdown
+    var audioTarget: ConversionTarget = .mp3
+    var videoTarget: ConversionTarget = .mp4
     var quality: Double = 0.85
     var suffix: String = "-converted"
     var preserveMetadata = true
+    var ocrPDF = false
 
     var isPlanning = false
     var isRunning = false
@@ -29,12 +34,20 @@ final class AppModel {
     var showCompletion = false
     var lastSummary: RunSummary?
     var alert: AlertPayload?
+    var watchRules: [WatchRule] = []
     var completedCount = 0
     var totalToConvert = 0
 
     private let service = ConversionService()
     private let journal = RunJournal.shared
+    private let watchService = WatchService()
     private var replanTask: Task<Void, Never>?
+    private var watchStarted = false
+
+    init() {
+        watchRules = Self.loadWatchRules()
+        Task { await startWatching() }
+    }
 
     var isEmpty: Bool { items.isEmpty }
 
@@ -43,6 +56,8 @@ final class AppModel {
             preset.imageTarget == imageTarget
                 && preset.dataTarget == dataTarget
                 && preset.documentTarget == documentTarget
+                && preset.audioTarget == audioTarget
+                && preset.videoTarget == videoTarget
                 && preset.suffix == suffix
                 && abs(preset.quality - quality) < 0.001
         }
@@ -52,6 +67,8 @@ final class AppModel {
         imageTarget = preset.imageTarget
         dataTarget = preset.dataTarget
         documentTarget = preset.documentTarget
+        audioTarget = preset.audioTarget
+        videoTarget = preset.videoTarget
         quality = preset.quality
         suffix = preset.suffix
         scheduleReplan()
@@ -62,6 +79,8 @@ final class AppModel {
         case .image: imageTarget
         case .data: dataTarget
         case .document: documentTarget
+        case .audio: audioTarget
+        case .video: videoTarget
         default: nil
         }
     }
@@ -132,7 +151,9 @@ final class AppModel {
 
         for index in items.indices {
             guard items[index].status == .pending else { continue }
-            guard let itemTarget = target(for: items[index].kind) else {
+            guard let itemTarget = items[index].ocrPDF
+                    ? ConversionTarget.searchablePDF
+                    : target(for: items[index].kind) else {
                 items[index].status = .skipped("No target for \(items[index].kind.label) yet")
                 continue
             }
@@ -173,6 +194,7 @@ final class AppModel {
             outputBytes: outputBytes
         )
         try? await journal.save(summary)
+        NotificationService.shared.notify(summary)
         lastSummary = summary
         showCompletion = true
     }
@@ -220,6 +242,128 @@ final class AppModel {
         self.selectedID = nil
     }
 
+    func addWatch(folder: URL, presetID: String) {
+        let rule = WatchRule(
+            name: folder.lastPathComponent,
+            folderPath: folder.standardizedFileURL.path,
+            presetID: presetID
+        )
+        watchRules.append(rule)
+        saveWatchRules()
+        Task { await watchService.start(rule) }
+    }
+
+    func updateWatch(_ rule: WatchRule) {
+        guard let index = watchRules.firstIndex(where: { $0.id == rule.id }) else { return }
+        watchRules[index] = rule
+        saveWatchRules()
+        Task {
+            if rule.isEnabled {
+                await watchService.start(rule)
+            } else {
+                await watchService.stop(rule.id)
+            }
+        }
+    }
+
+    func removeWatch(_ rule: WatchRule) {
+        watchRules.removeAll { $0.id == rule.id }
+        saveWatchRules()
+        Task { await watchService.stop(rule.id) }
+    }
+
+    private func startWatching() async {
+        guard !watchStarted else { return }
+        watchStarted = true
+        await watchService.setHandler { [weak self] rule, url in
+            await self?.handleWatchedFile(rule: rule, url: url)
+        }
+        await watchService.startAll(watchRules)
+    }
+
+    private func handleWatchedFile(rule: WatchRule, url: URL) async {
+        guard let preset = Preset.builtIn.first(where: { $0.id == rule.presetID }) else { return }
+        do {
+            let plan = try await service.makePlan(
+                urls: [url],
+                targets: TargetRecipe(
+                    image: preset.imageTarget,
+                    data: preset.dataTarget,
+                    document: preset.documentTarget,
+                    audio: preset.audioTarget,
+                    video: preset.videoTarget
+                ),
+                suffix: preset.suffix
+            )
+            let pending = plan.items.filter { $0.status == .pending }
+            guard !pending.isEmpty else { return }
+
+            var outputs: [URL] = []
+            var inputBytes: UInt64 = 0
+            var outputBytes: UInt64 = 0
+            var failures = 0
+            for item in pending {
+                guard let itemTarget = targets(for: item).target(for: item.kind) else { continue }
+                inputBytes += item.byteSize
+                do {
+                    let result = try await service.convert(
+                        item,
+                        options: ConversionOptions(
+                            target: itemTarget,
+                            quality: preset.quality,
+                            suffix: preset.suffix,
+                            preserveMetadata: true
+                        )
+                    )
+                    outputs.append(result.url)
+                    outputBytes += result.outputBytes
+                } catch {
+                    failures += 1
+                }
+            }
+            guard !outputs.isEmpty || failures > 0 else { return }
+            let summary = RunSummary(
+                target: preset.name,
+                outputs: outputs,
+                converted: outputs.count,
+                skipped: plan.items.filter {
+                    if case .skipped = $0.status { true } else { false }
+                }.count,
+                failed: failures,
+                inputBytes: inputBytes,
+                outputBytes: outputBytes
+            )
+            try? await journal.save(summary)
+            NotificationService.shared.notify(summary)
+        } catch {
+            // Watched conversions are silent by design; failures remain visible in History.
+        }
+    }
+
+    private func targets(for item: ConversionItem) -> TargetRecipe {
+        TargetRecipe(image: imageTarget, data: dataTarget, document: documentTarget)
+    }
+
+    private static func loadWatchRules() -> [WatchRule] {
+        guard let data = try? Data(contentsOf: watchRulesURL) else { return [] }
+        return (try? JSONDecoder().decode([WatchRule].self, from: data)) ?? []
+    }
+
+    private func saveWatchRules() {
+        guard let data = try? JSONEncoder().encode(watchRules) else { return }
+        try? data.write(to: Self.watchRulesURL, options: .atomic)
+    }
+
+    private static var watchRulesURL: URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        let directory = base.appendingPathComponent("FileFormatter", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("watches.json")
+    }
+
     func clearQueue() {
         guard !isRunning else { return }
         items.removeAll()
@@ -250,9 +394,12 @@ final class AppModel {
                 targets: TargetRecipe(
                     image: imageTarget,
                     data: dataTarget,
-                    document: documentTarget
+                    document: documentTarget,
+                    audio: audioTarget,
+                    video: videoTarget
                 ),
-                suffix: suffix
+                suffix: suffix,
+                ocrPDF: ocrPDF
             )
             items = result.items
             warnings = result.warnings

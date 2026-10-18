@@ -8,6 +8,9 @@ APP := $(ROOT)/.build/DerivedData/Build/Products/$(CONFIGURATION)/FileFormatter.
 bootstrap:
 	./scripts/bootstrap.sh
 
+bootstrap-media:
+	./scripts/build-ffmpeg.sh
+
 project:
 	xcodegen generate
 
@@ -24,10 +27,7 @@ selftest: build
 	./scripts/selftest.sh
 
 release:
-	./scripts/build.sh Release
-	mkdir -p dist
-	ditto -c -k --keepParent "$(ROOT)/.build/DerivedData/Build/Products/Release/FileFormatter.app" \
-		"dist/FileFormatter-0.1.0.zip"
+	./scripts/package.sh
 
 clean:
 	rm -rf .build dist

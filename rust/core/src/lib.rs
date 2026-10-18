@@ -152,6 +152,70 @@ pub fn convert_data(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FileHash {
+    pub path: String,
+    pub hash: String,
+    pub byte_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DuplicateGroup {
+    pub hash: String,
+    pub byte_size: u64,
+    pub paths: Vec<String>,
+}
+
+#[uniffi::export]
+pub fn hash_files(paths: Vec<String>) -> Vec<FileHash> {
+    let mut hashes = Vec::new();
+    for path in paths {
+        let file_path = Path::new(&path);
+        let Ok(metadata) = fs::metadata(file_path) else { continue };
+        if !metadata.is_file() { continue }
+        let Ok(file) = fs::File::open(file_path) else { continue };
+        let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
+        let mut hasher = blake3::Hasher::new();
+        if std::io::copy(&mut reader, &mut hasher).is_err() { continue }
+        hashes.push(FileHash {
+            path,
+            hash: hasher.finalize().to_hex().to_string(),
+            byte_size: metadata.len(),
+        });
+    }
+    hashes
+}
+
+#[uniffi::export]
+pub fn find_duplicates(paths: Vec<String>) -> Vec<DuplicateGroup> {
+    use std::collections::HashMap;
+    let mut by_hash: HashMap<String, Vec<(String, u64)>> = HashMap::new();
+    for item in hash_files(paths) {
+        if item.byte_size == 0 { continue }
+        by_hash
+            .entry(item.hash)
+            .or_default()
+            .push((item.path, item.byte_size));
+    }
+    let mut groups: Vec<DuplicateGroup> = by_hash
+        .into_iter()
+        .filter_map(|(hash, entries)| {
+            if entries.len() < 2 { return None }
+            let byte_size = entries[0].1;
+            Some(DuplicateGroup {
+                hash,
+                byte_size,
+                paths: entries.into_iter().map(|(path, _)| path).collect(),
+            })
+        })
+        .collect();
+    groups.sort_by(|a, b| {
+        (b.byte_size * (b.paths.len() as u64 - 1))
+            .cmp(&(a.byte_size * (a.paths.len() as u64 - 1)))
+    });
+    groups
+}
+
 #[uniffi::export]
 pub fn extract_office(
     input_path: String,
@@ -558,7 +622,8 @@ fn normalize_extension(value: &str) -> Result<String, CoreError> {
     match ext.as_str() {
         "jpg" | "jpeg" | "png" | "tif" | "tiff" | "heic" | "avif" | "webp" | "pdf"
         | "csv" | "tsv" | "json" | "yaml" | "toml" | "xlsx" | "md" | "markdown"
-        | "txt" | "html" => Ok(ext),
+        | "txt" | "html" | "mp3" | "m4a" | "flac" | "wav" | "aiff" | "aif"
+        | "opus" | "ogg" | "mp4" | "mov" | "mkv" | "webm" => Ok(ext),
         _ => Err(CoreError::UnsupportedTarget { extension: ext }),
     }
 }
@@ -603,6 +668,14 @@ fn sanitize(value: &str) -> String {
     }
 }
 
+fn is_audio_target(extension: &str) -> bool {
+    matches!(extension, "mp3" | "m4a" | "flac" | "wav" | "aiff" | "aif" | "opus" | "ogg")
+}
+
+fn is_video_target(extension: &str) -> bool {
+    matches!(extension, "mp4" | "mov" | "mkv" | "webm")
+}
+
 fn animation_note(ext: &str) -> Option<String> {
     if ext == "gif" || ext == "webp" {
         Some("Animated images use the first frame in this build.".to_string())
@@ -612,6 +685,29 @@ fn animation_note(ext: &str) -> Option<String> {
 }
 
 fn fidelity_for(kind: FileKind, source_ext: &str, target: &str) -> Fidelity {
+    if kind == FileKind::Audio {
+        return if is_audio_target(target) {
+            let lossless = |value: &str| matches!(value, "flac" | "wav" | "aiff" | "aif");
+            if lossless(source_ext) && lossless(target) {
+                Fidelity::Lossless
+            } else {
+                Fidelity::Reencode
+            }
+        } else if is_video_target(target) {
+            Fidelity::Unsupported
+        } else {
+            Fidelity::Unsupported
+        };
+    }
+    if kind == FileKind::Video {
+        return if is_audio_target(target) {
+            Fidelity::Extract
+        } else if is_video_target(target) {
+            Fidelity::Reencode
+        } else {
+            Fidelity::Unsupported
+        };
+    }
     if kind == FileKind::Document {
         return if matches!(target, "md" | "markdown" | "txt" | "html") {
             Fidelity::Extract
@@ -795,6 +891,28 @@ mod tests {
             "photo-web.webp"
         );
         assert_eq!(output_file_name("photo", "-web", "jpeg"), "photo-web.jpg");
+    }
+
+    #[test]
+    fn finds_duplicate_files_and_ignores_unique() {
+        let mut first = NamedTempFile::with_suffix(".bin").expect("first");
+        first.write_all(b"same contents").expect("write");
+        first.flush().expect("flush");
+        let mut second = NamedTempFile::with_suffix(".bin").expect("second");
+        second.write_all(b"same contents").expect("write");
+        second.flush().expect("flush");
+        let mut unique = NamedTempFile::with_suffix(".bin").expect("unique");
+        unique.write_all(b"different").expect("write");
+        unique.flush().expect("flush");
+
+        let groups = find_duplicates(vec![
+            first.path().to_string_lossy().into_owned(),
+            second.path().to_string_lossy().into_owned(),
+            unique.path().to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].paths.len(), 2);
+        assert_eq!(groups[0].byte_size, 13);
     }
 
     #[test]

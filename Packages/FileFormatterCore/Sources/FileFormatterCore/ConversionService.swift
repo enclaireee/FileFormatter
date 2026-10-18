@@ -3,12 +3,15 @@ import FileFormatterRust
 import PDFKit
 
 public actor ConversionService {
+    private let media = MediaConverter()
+
     public init() {}
 
     public func makePlan(
         urls: [URL],
         targets: TargetRecipe,
-        suffix: String
+        suffix: String,
+        ocrPDF: Bool = false
     ) throws -> PlanResult {
         var seen = Set<String>()
         let ordered = urls.compactMap { url -> URL? in
@@ -37,6 +40,19 @@ public actor ConversionService {
             if kind == .pdf {
                 for url in group {
                     let key = url.standardizedFileURL.path
+                    if ocrPDF {
+                        do {
+                            planned[key] = [try searchablePDFItem(url: url, suffix: suffix)]
+                        } catch {
+                            warnings.append("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
+                            planned[key] = [skippedItem(
+                                url: url,
+                                kind: kind,
+                                reason: error.localizedDescription
+                            )]
+                        }
+                        continue
+                    }
                     guard targets.image.family == .image else {
                         planned[key] = [skippedItem(
                             url: url,
@@ -168,6 +184,18 @@ public actor ConversionService {
                 target: options.target,
                 quality: options.quality
             )
+        case (.pdf, .document) where item.ocrPDF:
+            try await searchablePDF(
+                source: item.sourceURL,
+                destination: destination
+            )
+        case (.audio, .audio), (.video, .video), (.video, .audio):
+            try await convertMedia(
+                source: item.sourceURL,
+                destination: destination,
+                target: options.target,
+                quality: options.quality
+            )
         case (.data, .data):
             try convertData(
                 source: item.sourceURL,
@@ -246,6 +274,78 @@ public actor ConversionService {
                 pageCount: pageCount
             )
         }
+    }
+
+    private func convertMedia(
+        source: URL,
+        destination: URL,
+        target: ConversionTarget,
+        quality: Double
+    ) async throws {
+        guard let format = MediaTarget(rawValue: target.rawValue) else {
+            throw ConversionError.unsupportedTarget(target.displayName)
+        }
+        let directory = destination.deletingLastPathComponent()
+        let temporary = directory
+            .appendingPathComponent(".fileformatter-\(UUID().uuidString)")
+            .appendingPathExtension(format.fileExtension)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        do {
+            try await media.convert(
+                source: source,
+                destination: temporary,
+                format: format,
+                quality: quality
+            )
+        } catch {
+            throw ConversionError.core(error.localizedDescription)
+        }
+        try ImageConverter.install(temporary: temporary, at: destination)
+    }
+
+    private func searchablePDFItem(url: URL, suffix: String) throws -> ConversionItem {
+        guard let document = PDFDocument(url: url) else {
+            throw ConversionError.cannotReadSource(url.lastPathComponent)
+        }
+        guard !document.isLocked else {
+            throw ConversionError.cannotReadSource("\(url.lastPathComponent) is password-protected")
+        }
+        guard document.pageCount > 0 else {
+            throw ConversionError.cannotReadSource("\(url.lastPathComponent) has no pages")
+        }
+        let stem = url.deletingPathExtension().lastPathComponent
+        return ConversionItem(
+            sourceURL: url,
+            displayName: url.lastPathComponent,
+            kind: .pdf,
+            byteSize: fileSize(url),
+            outputName: "\(stem)\(suffix)-ocr.pdf",
+            fidelity: .reencode,
+            note: "Searchable PDF · \(document.pageCount) page(s)",
+            status: .pending,
+            pageIndex: nil,
+            pageCount: document.pageCount,
+            ocrPDF: true
+        )
+    }
+
+    private func searchablePDF(source: URL, destination: URL) async throws {
+        let directory = destination.deletingLastPathComponent()
+        let temporary = directory
+            .appendingPathComponent(".fileformatter-\(UUID().uuidString)")
+            .appendingPathExtension("pdf")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        do {
+            try await OCRService().makeSearchablePDF(
+                source: source,
+                destination: temporary
+            )
+        } catch {
+            throw ConversionError.core(error.localizedDescription)
+        }
+        try ImageConverter.install(temporary: temporary, at: destination)
     }
 
     private func convertData(

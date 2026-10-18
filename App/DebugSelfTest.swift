@@ -34,6 +34,7 @@ enum AppSelfTest {
             log("fixture=\(fixture.path)")
 
             let csv = try DebugFixture.makeCSV()
+            let wav = try DebugFixture.makeWAV()
             let service = ConversionService()
             let plan = try await service.makePlan(
                 urls: [fixture, csv],
@@ -80,15 +81,40 @@ enum AppSelfTest {
             }
             log("convert=PASS image=\(imageResult.url.lastPathComponent) data=\(dataResult.url.lastPathComponent)")
 
+            let audioPlan = try await service.makePlan(
+                urls: [wav],
+                targets: TargetRecipe(audio: .m4a),
+                suffix: "-audio"
+            )
+            guard let audioItem = audioPlan.items.first, audioItem.kind == .audio else {
+                log("FAIL audio plan")
+                exit(1)
+            }
+            let audioResult = try await service.convert(
+                audioItem,
+                options: ConversionOptions(
+                    target: .m4a,
+                    quality: 0.8,
+                    suffix: "-audio",
+                    preserveMetadata: true
+                )
+            )
+            let mediaInfo = try await MediaProbe().probe(audioResult.url)
+            guard (mediaInfo.duration ?? 0) > 0.1 else {
+                log("FAIL audio probe")
+                exit(1)
+            }
+            log("audio=PASS \(audioResult.url.lastPathComponent) duration=\(mediaInfo.duration ?? 0)")
+
             let journal = RunJournal()
             let summary = RunSummary(
                 target: "Mixed",
-                outputs: [imageResult.url, dataResult.url],
-                converted: 2,
+                outputs: [imageResult.url, dataResult.url, audioResult.url],
+                converted: 3,
                 skipped: 0,
                 failed: 0,
-                inputBytes: imageItem.byteSize + dataItem.byteSize,
-                outputBytes: imageResult.outputBytes + dataResult.outputBytes
+                inputBytes: imageItem.byteSize + dataItem.byteSize + audioItem.byteSize,
+                outputBytes: imageResult.outputBytes + dataResult.outputBytes + audioResult.outputBytes
             )
             try await journal.save(summary)
             guard await journal.latest()?.id == summary.id else {
@@ -99,9 +125,10 @@ enum AppSelfTest {
 
             let undo = await service.undo(summary)
             try await journal.markUndone(id: summary.id)
-            guard undo.removed == 2,
+            guard undo.removed == 3,
                   !FileManager.default.fileExists(atPath: imageResult.url.path),
-                  !FileManager.default.fileExists(atPath: dataResult.url.path) else {
+                  !FileManager.default.fileExists(atPath: dataResult.url.path),
+                  !FileManager.default.fileExists(atPath: audioResult.url.path) else {
                 log("FAIL undo removed=\(undo.removed) failed=\(undo.failed)")
                 exit(1)
             }
@@ -122,6 +149,45 @@ enum DebugFixture {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("people.csv")
         try "name,role\nAda,engineer\nGrace,admiral\n".write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    static func makeWAV() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FileFormatterSelfTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("tone.wav")
+
+        let sampleRate: UInt32 = 8_000
+        let sampleCount = 4_000
+        var samples = Data()
+        for index in 0..<sampleCount {
+            let value = sin(2.0 * Double.pi * 440 * Double(index) / Double(sampleRate))
+            var sample = Int16(value * 8_000).littleEndian
+            withUnsafeBytes(of: &sample) { samples.append(contentsOf: $0) }
+        }
+
+        func append<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
+            var little = value.littleEndian
+            withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+        }
+
+        var wav = Data()
+        wav.append(contentsOf: Array("RIFF".utf8))
+        append(UInt32(36 + samples.count), to: &wav)
+        wav.append(contentsOf: Array("WAVE".utf8))
+        wav.append(contentsOf: Array("fmt ".utf8))
+        append(UInt32(16), to: &wav)
+        append(UInt16(1), to: &wav)
+        append(UInt16(1), to: &wav)
+        append(sampleRate, to: &wav)
+        append(sampleRate * 2, to: &wav)
+        append(UInt16(2), to: &wav)
+        append(UInt16(16), to: &wav)
+        wav.append(contentsOf: Array("data".utf8))
+        append(UInt32(samples.count), to: &wav)
+        wav.append(samples)
+        try wav.write(to: url, options: .atomic)
         return url
     }
 

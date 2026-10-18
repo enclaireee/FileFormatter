@@ -24,6 +24,12 @@ See `rust/Cargo.lock`. Direct dependencies: `thiserror` (MIT/Apache-2.0), `uniff
 - `zip` (MIT), `quick-xml` (MIT/Apache-2.0), `calamine` (MIT), `rust_xlsxwriter` (MIT/Apache-2.0)
 - All are statically linked into the Rust core; see `rust/Cargo.lock` for exact versions.
 
-## FFmpeg
+## FFmpeg 8.0.1 (LGPL-2.1-or-later)
 
-Not bundled yet. The planned LGPL-2.1 build, its exact configure line, and the source offer will be added before any audio/video build ships.
+- Source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz
+- Build script: `scripts/build-ffmpeg.sh`
+- Configuration line and build details: `vendor/ffmpeg/BUILD-INFO.txt`
+- Bundled helpers: `Contents/Resources/Helpers/ffmpeg`, `ffprobe` (statically linked, LGPL-only; no `--enable-gpl`, no `--enable-nonfree`, no x264/x265)
+- Codec dependencies: LAME (LGPL-2.0), Opus (BSD-3), libvorbis (BSD-3), libvpx (BSD-3), dav1d (BSD-2)
+- License texts: `docs/licenses/` and the app's `Contents/Resources/Licenses/`
+- Source offer: the build script and the versioned source URL satisfy the LGPL source requirement for this private build. If the app is distributed beyond friends, ship the corresponding FFmpeg source or a written offer.
