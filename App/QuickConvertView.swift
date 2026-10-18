@@ -10,15 +10,19 @@ final class QuickConvertState {
     var isStarting = false
     var undoing = false
     var error: String?
+    /// A Compress action waiting on its options panel.
+    var configuring: QuickAction?
 
     func stage(_ new: [URL]) {
         summary = nil
         error = nil
+        configuring = nil
         urls = new
     }
 
     func reset() {
         urls = []
+        configuring = nil
         summary = nil
         error = nil
     }
@@ -119,15 +123,31 @@ struct QuickConvertView: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange)
             }
-            QuickActionRow(urls: state.urls) { run($0) }
+            if let action = state.configuring {
+                CompressPanel(action: action, urls: state.urls) {
+                    state.configuring = nil
+                } run: { job in
+                    state.configuring = nil
+                    start(job)
+                }
+            } else {
+                QuickActionRow(urls: state.urls) { run($0) }
+            }
         }
     }
 
     private func run(_ action: QuickAction) {
+        switch action {
+        case .compressImage, .compressPDF, .compressVideo: state.configuring = action
+        default: start(action.job(for: state.urls))
+        }
+    }
+
+    private func start(_ job: ConversionJob) {
         let urls = state.urls
         state.isStarting = true
         Task {
-            let summary = await model.quickRun(urls: urls, action: action)
+            let summary = await model.quickRun(urls: urls, job: job)
             state.isStarting = false
             if let summary {
                 state.summary = summary
@@ -183,10 +203,20 @@ struct QuickConvertView: View {
             }
             if summary.skipped > 0 { Text("\(summary.skipped) skipped").foregroundStyle(.orange) }
             if summary.failed > 0 { Text("\(summary.failed) failed").foregroundStyle(.red) }
+            if !summary.undone {
+                outputRows
+            }
             ForEach(Array(problems.prefix(3).enumerated()), id: \.offset) { _, line in
                 Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             HStack {
+                Button("Copy") {
+                    let existing = summary.outputs.filter { FileManager.default.fileExists(atPath: $0.path) }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.writeObjects(existing as [NSURL])
+                }
+                .disabled(summary.undone || summary.outputs.isEmpty)
+                .help("Copy the files, then paste into Mail, Slack or Finder")
                 Button("Show in Finder") {
                     let existing = summary.outputs.filter { FileManager.default.fileExists(atPath: $0.path) }
                     if !existing.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(existing) }
@@ -212,6 +242,37 @@ struct QuickConvertView: View {
             Button("Convert more") { state.reset() }
                 .keyboardShortcut(.defaultAction)
         }
+    }
+
+    /// Converted files with their sizes; drag a row into any app to hand the file over.
+    @ViewBuilder private var outputRows: some View {
+        let done = model.quickItems.filter { $0.outputURL != nil && $0.status == .completed }
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(done.prefix(5)) { item in
+                if let url = item.outputURL {
+                    HStack(spacing: 6) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                            .resizable().frame(width: 18, height: 18)
+                            .accessibilityHidden(true)
+                        Text(url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        Text(sizeChange(from: item.byteSize, to: url))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                    .onDrag { NSItemProvider(contentsOf: url) ?? NSItemProvider() }
+                    .help("Drag into any app")
+                }
+            }
+            if done.count > 5 {
+                Text("+\(done.count - 5) more").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func sizeChange(from input: UInt64, to url: URL) -> String {
+        let output = UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        return "\(CompressPanel.format(input)) → \(CompressPanel.format(output))"
     }
 
     private var problems: [String] {
@@ -242,10 +303,7 @@ struct QuickConvertView: View {
                 }
                 Spacer()
                 Menu {
-                    Button("Settings…") {
-                        NSApp.activate(ignoringOtherApps: true)
-                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                    }
+                    SettingsLink { Text("Settings…") }
                     if model.isRunning {
                         Button("Stop Queue") { model.cancel() }
                     } else if model.runnableCount > 0 {

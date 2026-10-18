@@ -219,7 +219,7 @@ final class AppModel {
 
     @discardableResult
     func quickRun(urls: [URL], action: QuickAction, showsProgress: Bool = true) async -> RunSummary? {
-        await quickRun(urls: urls, job: action.job, showsProgress: showsProgress)
+        await quickRun(urls: urls, job: action.job(for: urls), showsProgress: showsProgress)
     }
 
     private func performQuickRun(urls: [URL], job: ConversionJob, showsProgress: Bool) async -> RunSummary? {
@@ -263,7 +263,11 @@ final class AppModel {
     }
 
     func undo(_ summary: RunSummary) async -> (removed: Int, failed: Int) {
+        // Opens sandbox access to the Settings folder in case the outputs sit there.
+        // ponytail: only the current folder; store the bookmark on RunSummary if undo after switching folders matters.
+        _ = AppSettings.bookmarkedFolder()
         let result = await service.undo(summary)
+        guard result.failed == 0 else { return result }
         try? await journal.markUndone(id: summary.id)
         if quickSummary?.id == summary.id { quickSummary?.undone = true }
         return result
@@ -271,6 +275,7 @@ final class AppModel {
 
     private struct RunTally {
         var outputs: [URL] = []
+        var fileNumbers: [Int?] = []
         var converted = 0
         var failed = 0
         var outputBytes: UInt64 = 0
@@ -288,7 +293,8 @@ final class AppModel {
                 skipped: items.filter { if case .skipped = $0.status { true } else { false } }.count,
                 failed: failed,
                 inputBytes: inputBytes,
-                outputBytes: outputBytes
+                outputBytes: outputBytes,
+                fileNumbers: fileNumbers
             )
         }
     }
@@ -301,6 +307,16 @@ final class AppModel {
         update: (Int, ItemStatus, URL?) -> Void
     ) async -> RunTally {
         var tally = RunTally()
+        var job = job
+        job.outputDirectory = AppSettings.outputFolder()
+        if AppSettings.bool(AppSettings.useFolder), job.outputDirectory == nil {
+            // Never fall back silently: the user expects files in their folder.
+            for index in items.indices where items[index].status == .pending {
+                tally.failed += 1
+                update(index, .failed("Output folder unavailable. Choose it again in Settings."), nil)
+            }
+            return tally
+        }
         for index in items.indices where items[index].status == .pending {
             if Task.isCancelled {
                 tally.cancelled = true
@@ -316,6 +332,7 @@ final class AppModel {
                 let result = try await service.convert(item, options: job.options(for: item, target: target))
                 tally.outputs.append(result.url)
                 tally.outputs.append(contentsOf: result.extras)
+                tally.fileNumbers += ([result.url] + result.extras).map(RunSummary.fileNumber)
                 tally.outputBytes += result.outputBytes
                 tally.converted += 1
                 update(index, .completed, result.url)

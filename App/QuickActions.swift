@@ -13,7 +13,11 @@ struct ConversionJob: Sendable {
     var maxPixelSize: Int?
     var imageTargetBytes: UInt64?
     var mediaTargetBytes: UInt64?
+    /// Video/audio goal as a share of each file's size (Compress Light/Balanced/Strong).
+    var mediaTargetRatio: Double?
     var removeBackground = false
+    /// Set per run from Settings; nil writes next to the source.
+    var outputDirectory: URL?
 
     func target(for item: ConversionItem) -> ConversionTarget? {
         if item.kind == .pdf {
@@ -25,16 +29,20 @@ struct ConversionJob: Sendable {
     }
 
     func options(for item: ConversionItem, target: ConversionTarget) -> ConversionOptions {
-        let goal = item.kind == .image ? imageTargetBytes : mediaTargetBytes
+        let still = item.kind == .image || item.kind == .pdf
+        let goal = still
+            ? imageTargetBytes
+            : mediaTargetBytes ?? mediaTargetRatio.map { UInt64(Double(item.byteSize) * $0) }
         return ConversionOptions(
             target: target,
             quality: quality,
             suffix: suffix,
             preserveMetadata: preserveMetadata,
-            maxPixelSize: item.kind == .image ? maxPixelSize : nil,
+            maxPixelSize: still ? maxPixelSize : nil,
             // Already under the size goal: convert normally instead of squeezing.
             targetBytes: goal.flatMap { item.byteSize > $0 ? $0 : nil },
-            removeBackground: item.kind == .image && removeBackground
+            removeBackground: item.kind == .image && removeBackground,
+            outputDirectory: outputDirectory
         )
     }
 }
@@ -51,8 +59,6 @@ enum QuickAction: Hashable, Identifiable, Sendable {
     case videoToGIF
     case extractAudio
     case compressVideo
-
-    static let shareSize: UInt64 = 25_000_000
 
     var id: String {
         switch self {
@@ -94,7 +100,7 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         case .ocr: "Make Searchable"
         case .videoToGIF: "GIF"
         case .extractAudio: "Extract Audio"
-        case .compressVideo: "Shrink to 25 MB"
+        case .compressVideo: "Compress"
         }
     }
 
@@ -122,8 +128,10 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         }
     }
 
-    var job: ConversionJob {
+    func job(for urls: [URL]) -> ConversionJob {
         var job = ConversionJob(label: title)
+        job.suffix = AppSettings.suffix(AppSettings.convertSuffix)
+        job.preserveMetadata = AppSettings.bool(AppSettings.keepMetadata)
         switch self {
         case .to(let target):
             switch target.family {
@@ -139,22 +147,14 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         case .removeBackground:
             job.targets.image = .png
             job.removeBackground = true
-            job.suffix = "-nobg"
-        case .compressImage:
-            // ponytail: always JPEG, so transparency is flattened; pick per-source format if that bites.
-            job.targets.image = .jpeg
-            job.quality = 0.75
-            job.maxPixelSize = 2560
-            job.preserveMetadata = false
-            job.suffix = "-small"
+            job.suffix = AppSettings.suffix(AppSettings.backgroundSuffix)
+        case .compressImage, .compressPDF, .compressVideo:
+            return CompressSettings.saved.job(for: self, urls: urls)
         case .makePDF:
             job.targets.image = .pdf
             job.pdfMode = .merge
         case .splitPDF:
             job.pdfMode = .split
-        case .compressPDF:
-            job.pdfMode = .compress
-            job.suffix = "-small"
         case .ocr:
             job.pdfMode = .searchable
         case .videoToGIF:
@@ -162,10 +162,6 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         case .extractAudio:
             job.targets.video = .mp3
             job.targets.audio = .mp3
-        case .compressVideo:
-            job.targets.video = .mp4
-            job.mediaTargetBytes = Self.shareSize
-            job.suffix = "-small"
         }
         return job
     }

@@ -41,17 +41,66 @@ public enum PDFTools {
         try write(output, to: destination)
     }
 
-    public static func compress(source: URL, destination: URL) throws {
+    /// Light, Balanced, Strong: JPEG quality and longest image side inside the PDF.
+    public static let compressionLevels: [(quality: Double, maxPixelSize: Int)] = [(0.8, 3000), (0.6, 2000), (0.4, 1200)]
+
+    /// Redraws the PDF with recompressed images (text and vectors stay). With `targetBytes`,
+    /// tries each level from lightest and keeps the first that fits, else the smallest.
+    public static func compress(
+        source: URL,
+        destination: URL,
+        quality: Double? = nil,
+        maxPixelSize: Int? = nil,
+        targetBytes: UInt64? = nil
+    ) throws {
         let name = source.lastPathComponent
         guard let document = PDFDocument(url: source) else {
             throw ConversionError.cannotReadSource(name)
         }
         if document.isLocked { throw ConversionError.cannotReadSource("\(name) is password-protected") }
-        // PDFKit's write options don't recompress images, so redraw through the
-        // system "Reduce File Size" Quartz filter (keeps text and vectors).
+        func size(_ url: URL) -> UInt64 {
+            UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        let levels: [(Double?, Int?)] = targetBytes == nil
+            ? [(quality, maxPixelSize)]
+            : compressionLevels.map { ($0.quality, $0.maxPixelSize) }
+        var best: URL?
+        defer { if let best { try? FileManager.default.removeItem(at: best) } }
+        for (quality, maxPixelSize) in levels {
+            let attempt = try redraw(source, for: destination, quality: quality, maxPixelSize: maxPixelSize)
+            if let old = best, size(old) <= size(attempt) {
+                try? FileManager.default.removeItem(at: attempt)
+            } else {
+                if let old = best { try? FileManager.default.removeItem(at: old) }
+                best = attempt
+            }
+            if let targetBytes, let best, size(best) <= targetBytes { break }
+        }
+        guard let winner = best, size(winner) < size(source) else { throw ConversionError.notSmaller }
+        try ImageConverter.install(temporary: winner, at: destination)
+        best = nil
+    }
+
+    /// One pass through the system "Reduce File Size" Quartz filter, with its image settings overridden.
+    private static func redraw(_ source: URL, for destination: URL, quality: Double?, maxPixelSize: Int?) throws -> URL {
         let temporary = temporaryURL(for: destination)
+        let filterURL = URL(fileURLWithPath: "/System/Library/Filters/Reduce File Size.qfilter")
+        var properties = NSDictionary(contentsOf: filterURL) as? [String: Any] ?? [:]
+        if quality != nil || maxPixelSize != nil,
+           var data = properties["FilterData"] as? [String: Any],
+           var color = data["ColorSettings"] as? [String: Any],
+           var image = color["ImageSettings"] as? [String: Any] {
+            if let quality { image["Compression Quality"] = quality }
+            if let maxPixelSize, var scale = image["ImageScaleSettings"] as? [String: Any] {
+                scale["ImageSizeMax"] = maxPixelSize
+                image["ImageScaleSettings"] = scale
+            }
+            color["ImageSettings"] = image
+            data["ColorSettings"] = color
+            properties["FilterData"] = data
+        }
         guard let pdf = CGPDFDocument(source as CFURL),
-              let filter = QuartzFilter(url: URL(fileURLWithPath: "/System/Library/Filters/Reduce File Size.qfilter")),
+              let filter = QuartzFilter(properties: properties),
               let context = CGContext(temporary as CFURL, mediaBox: nil, nil) else {
             throw ConversionError.cannotCreateDestination(destination.lastPathComponent)
         }
@@ -66,14 +115,7 @@ public enum PDFTools {
         }
         context.closePDF()
         filter.remove(from: context)
-        func size(_ url: URL) -> Int {
-            (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        }
-        if size(temporary) >= size(source) {
-            try? FileManager.default.removeItem(at: temporary)
-            throw ConversionError.notSmaller
-        }
-        try ImageConverter.install(temporary: temporary, at: destination)
+        return temporary
     }
 
     private static func temporaryURL(for destination: URL) -> URL {

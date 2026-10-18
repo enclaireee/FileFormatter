@@ -156,7 +156,7 @@ struct BottomBar: View {
     var body: some View {
         HStack(spacing: 12) {
             Label("Keep originals", systemImage: "checkmark.shield")
-            Text("Same folder · \(model.suffix)")
+            Text("\(AppSettings.outputFolder()?.lastPathComponent ?? "Same folder") · \(model.suffix)")
             Spacer()
             if !model.isEmpty {
                 Text("\(model.items.count) files · \(ByteCount.string(model.inputBytes))")

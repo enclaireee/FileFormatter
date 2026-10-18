@@ -4,6 +4,8 @@ import PDFKit
 
 public actor ConversionService {
     private let media = MediaConverter()
+    /// Destinations claimed by conversions still in flight, so two runs into one folder never pick the same name.
+    private var reserved = Set<String>()
 
     public init() {}
 
@@ -13,6 +15,7 @@ public actor ConversionService {
         suffix: String,
         pdfMode: PDFMode = .pages
     ) throws -> PlanResult {
+        let suffix = suffix.filter { $0 != "/" && $0 != ":" && $0 != "\0" }
         var seen = Set<String>()
         let ordered = urls.compactMap { url -> URL? in
             let path = url.standardizedFileURL.path
@@ -187,7 +190,9 @@ public actor ConversionService {
             throw ConversionError.cannotReadSource(item.displayName)
         }
 
-        let destination = uniqueDestination(for: item)
+        let destination = uniqueDestination(for: item, in: options.outputDirectory)
+        reserved.insert(destination.path)
+        defer { reserved.remove(destination.path) }
         var extras: [URL] = []
 
         switch (item.kind, options.target.family) {
@@ -201,7 +206,14 @@ public actor ConversionService {
             }
             try PDFTools.extractPage(source: item.sourceURL, pageNumber: pageNumber, destination: destination)
         case (.pdf, _) where item.pdfMode == .compress:
-            try PDFTools.compress(source: item.sourceURL, destination: destination)
+            // A compress level always sets a size cap; without one, keep the system filter's own quality.
+            try PDFTools.compress(
+                source: item.sourceURL,
+                destination: destination,
+                quality: options.maxPixelSize == nil ? nil : options.quality,
+                maxPixelSize: options.maxPixelSize,
+                targetBytes: options.targetBytes
+            )
         case (.image, .image), (.image, .pdf):
             if options.removeBackground || options.maxPixelSize != nil || options.targetBytes != nil {
                 var (image, properties) = try ImageTools.load(item.sourceURL, maxPixelSize: options.maxPixelSize)
@@ -285,14 +297,19 @@ public actor ConversionService {
         }
         var removed = 0
         var failed = 0
-        for output in summary.outputs {
-            guard FileManager.default.fileExists(atPath: output.path) else {
-                removed += 1
+        for (index, output) in summary.outputs.enumerated() {
+            // Only trash the file this run wrote: a file copied or saved under the same name later is someone else's.
+            if let numbers = summary.fileNumbers, numbers.count == summary.outputs.count,
+               let recorded = numbers[index], let current = RunSummary.fileNumber(output), current != recorded {
+                failed += 1
                 continue
             }
+            // No existence pre-check: without sandbox access a file looks missing, which must count as a failure.
             do {
                 var resulting: NSURL?
                 try FileManager.default.trashItem(at: output, resultingItemURL: &resulting)
+                removed += 1
+            } catch CocoaError.fileNoSuchFile {
                 removed += 1
             } catch {
                 failed += 1
@@ -482,8 +499,8 @@ public actor ConversionService {
         return UInt64(values?.fileSize ?? 0)
     }
 
-    private func uniqueDestination(for item: ConversionItem) -> URL {
-        let directory = item.sourceURL.deletingLastPathComponent()
+    private func uniqueDestination(for item: ConversionItem, in folder: URL?) -> URL {
+        let directory = folder ?? item.sourceURL.deletingLastPathComponent()
         var candidate = directory.appendingPathComponent(item.outputName)
 
         if candidate.standardizedFileURL == item.sourceURL.standardizedFileURL {
@@ -492,14 +509,15 @@ public actor ConversionService {
             candidate = directory.appendingPathComponent("\(base)-converted.\(ext)")
         }
 
-        guard FileManager.default.fileExists(atPath: candidate.path) else {
+        func taken(_ url: URL) -> Bool { reserved.contains(url.path) || FileManager.default.fileExists(atPath: url.path) }
+        guard taken(candidate) else {
             return candidate
         }
         let base = candidate.deletingPathExtension().lastPathComponent
         let ext = candidate.pathExtension
         for index in 2...9999 {
             let numbered = directory.appendingPathComponent("\(base) \(index).\(ext)")
-            if !FileManager.default.fileExists(atPath: numbered.path) {
+            if !taken(numbered) {
                 return numbered
             }
         }

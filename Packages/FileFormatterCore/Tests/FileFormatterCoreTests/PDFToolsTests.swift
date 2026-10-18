@@ -88,6 +88,27 @@ struct PDFToolsTests {
         #expect(PDFDocument(url: out)?.pageCount == 1)
     }
 
+    @Test func strongerLevelIsSmallerAndTargetFits() throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let png = d.appendingPathComponent("n.png"), big = d.appendingPathComponent("big.pdf")
+        makePNG(at: png, width: 2500, height: 2500, noisy: true)
+        var box = CGRect(x: 0, y: 0, width: 250, height: 250)
+        let ctx = try #require(CGContext(big as CFURL, mediaBox: &box, nil))
+        let img = try #require(CGImageSourceCreateWithURL(png as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
+        ctx.beginPDFPage(nil); ctx.draw(img, in: box); ctx.endPDFPage(); ctx.closePDF()
+        func size(_ u: URL) -> Int { (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 }
+
+        let light = d.appendingPathComponent("light.pdf"), strong = d.appendingPathComponent("strong.pdf")
+        let levels = PDFTools.compressionLevels
+        try PDFTools.compress(source: big, destination: light, quality: levels[0].quality, maxPixelSize: levels[0].maxPixelSize)
+        try PDFTools.compress(source: big, destination: strong, quality: levels[2].quality, maxPixelSize: levels[2].maxPixelSize)
+        #expect(size(strong) < size(light))
+
+        let fit = d.appendingPathComponent("fit.pdf")
+        try PDFTools.compress(source: big, destination: fit, targetBytes: UInt64(size(light) - 1))
+        #expect(size(fit) < size(light))
+    }
+
     @Test func compressTinyPDFNeverGrows() throws {
         let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
         let src = d.appendingPathComponent("t.pdf"), out = d.appendingPathComponent("o.pdf")

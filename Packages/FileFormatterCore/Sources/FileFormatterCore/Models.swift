@@ -337,6 +337,8 @@ public struct ConversionOptions: Sendable {
     public var maxPixelSize: Int?
     public var targetBytes: UInt64?
     public var removeBackground: Bool
+    /// Where outputs go; nil writes next to the source.
+    public var outputDirectory: URL?
 
     public init(
         target: ConversionTarget,
@@ -345,7 +347,8 @@ public struct ConversionOptions: Sendable {
         preserveMetadata: Bool,
         maxPixelSize: Int? = nil,
         targetBytes: UInt64? = nil,
-        removeBackground: Bool = false
+        removeBackground: Bool = false,
+        outputDirectory: URL? = nil
     ) {
         self.target = target
         self.quality = quality
@@ -354,6 +357,7 @@ public struct ConversionOptions: Sendable {
         self.maxPixelSize = maxPixelSize
         self.targetBytes = targetBytes
         self.removeBackground = removeBackground
+        self.outputDirectory = outputDirectory
     }
 }
 
@@ -370,6 +374,14 @@ public struct RunSummary: Identifiable, Codable, Sendable {
     public var undone: Bool
     /// Batch renames as [from, to] pairs; undo moves them back. Nil for conversions.
     public var renames: [[URL]]?
+    /// Inode of each output when it was written, parallel to `outputs`. Undo only trashes files that still match.
+    /// Nil in journals written before 0.6.0.
+    public var fileNumbers: [Int?]?
+
+    /// The file's inode, read uncached.
+    public static func fileNumber(_ url: URL) -> Int? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber]) as? Int
+    }
 
     public init(
         id: UUID = UUID(),
@@ -382,7 +394,8 @@ public struct RunSummary: Identifiable, Codable, Sendable {
         inputBytes: UInt64,
         outputBytes: UInt64,
         undone: Bool = false,
-        renames: [[URL]]? = nil
+        renames: [[URL]]? = nil,
+        fileNumbers: [Int?]? = nil
     ) {
         self.id = id
         self.date = date
@@ -394,6 +407,7 @@ public struct RunSummary: Identifiable, Codable, Sendable {
         self.inputBytes = inputBytes
         self.outputBytes = outputBytes
         self.undone = undone
+        self.fileNumbers = fileNumbers
         self.renames = renames
     }
 

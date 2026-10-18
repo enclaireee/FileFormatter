@@ -2,7 +2,7 @@
 
 A native, local-only batch file converter for macOS 26+ on Apple silicon.
 
-**Status: 0.5.0 — instant convert.** Drop files on the menu bar icon or right-click them in Finder and pick an action; the result lands next to the original. The full window still handles big mixed batches. The app converts images, PDFs, Office documents, data, audio, and video; removes image backgrounds; compresses images, PDFs, and video; merges and splits PDFs; batch renames; runs OCR; watches folders; and finds duplicates. A signed DMG is produced by `make release`.
+**Status: 0.6.0 — instant convert.** Press ⌥⌘F (changeable in Settings), drop files on the menu bar icon or right-click them in Finder and pick an action; the result lands next to the original. The full window still handles big mixed batches. The app converts images, PDFs, Office documents, data, audio, and video; removes image backgrounds; compresses images, PDFs, and video; merges and splits PDFs; batch renames; runs OCR; watches folders; and finds duplicates. `make release` produces an ad-hoc signed DMG; it is not notarized, so the first launch needs right-click → Open.
 
 ## What works now
 
@@ -129,4 +129,4 @@ No network entitlement, no telemetry, no uploads. Everything is processed locall
 
 ## License
 
-Private project. Third-party license notices will be added with the bundled FFmpeg work; the Rust dependencies are permissively licensed (UniFFI MPL-2.0, thiserror MIT/Apache-2.0).
+Private project. Bundled FFmpeg is LGPL-2.1; its notices and build info ship inside the app (Settings → About → Licenses…, or `Contents/Resources/Licenses`) and are listed in [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md). The Rust dependencies are permissively licensed (UniFFI MPL-2.0, thiserror MIT/Apache-2.0).

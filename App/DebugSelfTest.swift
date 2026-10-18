@@ -149,8 +149,26 @@ enum AppSelfTest {
                     log("FAIL quick undo \(action.id)")
                     exit(1)
                 }
+                if action == .compressImage,
+                   !output.deletingPathExtension().lastPathComponent.hasSuffix(AppSettings.suffix(AppSettings.compressSuffix)) {
+                    log("FAIL compress suffix \(output.lastPathComponent)")
+                    exit(1)
+                }
                 log("quick=PASS \(action.id) -> \(output.lastPathComponent)")
             }
+            let strong = CompressSettings(strength: .strong)
+            guard let estimate = await strong.estimate(for: .compressImage, urls: [fixture]),
+                  estimate.output > 0, estimate.output <= estimate.input else {
+                log("FAIL compress estimate")
+                exit(1)
+            }
+            let capped = CompressSettings(strength: .target, targetMB: 0.1)
+            guard let ceiling = await capped.estimate(for: .compressImage, urls: [fixture]),
+                  ceiling.atMost, ceiling.output <= max(capped.targetBytes, 1) || ceiling.output == ceiling.input else {
+                log("FAIL compress target estimate")
+                exit(1)
+            }
+            log("estimate=PASS \(estimate.input) -> \(estimate.output)")
             log("SELF-TEST PASS")
             exit(0)
         } catch {

@@ -6,6 +6,7 @@ struct FileFormatterApp: App {
     @State private var model = AppModel.shared
 
     init() {
+        AppSettings.register()
         #if DEBUG
         AppSelfTest.runIfRequested()
         #endif

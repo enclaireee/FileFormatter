@@ -65,13 +65,27 @@ final class DropShelf {
         show()
     }
 
-    private func show() {
+    /// Places the pad invisibly at the top right so the popover can point at it (hotkey, icon hidden by the notch).
+    func showAnchor() {
+        poll?.invalidate()
+        poll = nil
+        place()
+        panel.alphaValue = 0
+        panel.ignoresMouseEvents = true
+        panel.orderFrontRegardless()
+    }
+
+    private func place() {
         let mouse = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main
         else { return }
         let visible = screen.visibleFrame
         let size = panel.frame.size
         panel.setFrameOrigin(NSPoint(x: visible.maxX - size.width - 16, y: visible.maxY - size.height - 16))
+    }
+
+    private func show() {
+        place()
         host.rootView = ShelfPad(targeted: false)
         dropped = false
         panel.alphaValue = 1
@@ -79,9 +93,12 @@ final class DropShelf {
         panel.orderFrontRegardless()
 
         poll?.invalidate()
-        poll = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkReleased() }
         }
+        // .common so it keeps firing while a modal panel (folder picker) runs.
+        RunLoop.main.add(timer, forMode: .common)
+        poll = timer
     }
 
     private func checkReleased() {

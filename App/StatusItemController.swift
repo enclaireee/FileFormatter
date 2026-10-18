@@ -33,13 +33,25 @@ final class StatusItemController: NSObject, NSWindowDelegate, NSDraggingDestinat
         popover.contentViewController = NSHostingController(
             rootView: QuickConvertView(state: state, model: .shared, reopen: { [weak self] in self?.show() })
         )
-        shelf.shouldShow = { [weak self] in !(self?.popover.isShown ?? true) }
+        shelf.shouldShow = { [weak self] in
+            AppSettings.bool(AppSettings.shelfEnabled) && NSApp.modalWindow == nil && !(self?.popover.isShown ?? true)
+        }
         shelf.onDrop = { [weak self] urls in
             guard let self else { return }
             state.stage(urls)
             show(from: shelf.anchor)
         }
         shelf.start()
+        HotKey.shared.onPress = { [weak self] in self?.hotkeyPressed() }
+        HotKey.shared.apply()
+    }
+
+    private func hotkeyPressed() {
+        if popover.isShown { return popover.performClose(nil) }
+        guard NSApp.modalWindow == nil else { return }
+        // ponytail: always the top-right anchor, since the notch can hide the icon and macOS doesn't say when.
+        shelf.showAnchor()
+        show(from: shelf.anchor)
     }
 
     @objc private func toggle() {

@@ -49,6 +49,55 @@ struct DataConversionTests {
         #expect(rows[0]["name"] as? String == "Ada")
     }
 
+    @Test func writesIntoChosenOutputFolderAndNumbersRepeats() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FileFormatterOut-\(UUID().uuidString)", isDirectory: true)
+        let folder = directory.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let table = directory.appendingPathComponent("people.csv")
+        try "name\nAda\n".write(to: table, atomically: true, encoding: .utf8)
+        let service = ConversionService()
+        let item = try #require(try await service.makePlan(urls: [table], target: .json, suffix: "").items.first)
+        let options = ConversionOptions(target: .json, quality: 1, suffix: "", preserveMetadata: false,
+                                        outputDirectory: folder)
+
+        let first = try await service.convert(item, options: options)
+        let second = try await service.convert(item, options: options)
+        #expect(first.url.deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL)
+        #expect(first.url.lastPathComponent == "people.json")
+        #expect(second.url.lastPathComponent == "people 2.json")
+    }
+
+    @Test func undoKeepsAFileThatReplacedAnOutput() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FileFormatterUndo-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let table = directory.appendingPathComponent("people.csv")
+        try "name\nAda\n".write(to: table, atomically: true, encoding: .utf8)
+        let service = ConversionService()
+        let item = try #require(try await service.makePlan(urls: [table], target: .json, suffix: "").items.first)
+        let options = ConversionOptions(target: .json, quality: 1, suffix: "", preserveMetadata: false)
+        let fresh = try await service.convert(item, options: options).url
+        let reused = try await service.convert(item, options: options).url
+        let summary = RunSummary(target: "JSON", outputs: [fresh, reused], converted: 2, skipped: 0, failed: 0,
+                                 inputBytes: 0, outputBytes: 0,
+                                 fileNumbers: [fresh, reused].map(RunSummary.fileNumber))
+        // The user deleted our output and copied another file in under the same name (old date kept).
+        try FileManager.default.removeItem(at: reused)
+        try Data("other".utf8).write(to: reused)
+        try FileManager.default.setAttributes([.modificationDate: Date.distantPast], ofItemAtPath: reused.path)
+
+        let result = await service.undo(summary)
+        #expect(result.removed == 1)
+        #expect(result.failed == 1)
+        #expect(!FileManager.default.fileExists(atPath: fresh.path))
+        #expect(FileManager.default.fileExists(atPath: reused.path))
+    }
+
     @Test func convertsCSVToXLSXAndBack() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("FileFormatterXLSX-\(UUID().uuidString)", isDirectory: true)
