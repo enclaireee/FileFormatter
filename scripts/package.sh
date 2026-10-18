@@ -14,8 +14,12 @@ mkdir -p dist
 ditto "$APP" "dist/FileFormatter.app"
 codesign --force --deep --sign - "dist/FileFormatter.app"
 ditto -c -k --keepParent "dist/FileFormatter.app" "dist/FileFormatter-$VERSION.zip"
-hdiutil create -volname FileFormatter -srcfolder "dist/FileFormatter.app" -ov -format UDZO "dist/FileFormatter-$VERSION.dmg" >/dev/null
-codesign --force --deep --sign - "dist/FileFormatter.app"
+# DMG opens to the app next to an Applications shortcut for drag-to-install.
+STAGE="$(mktemp -d)"
+ditto "dist/FileFormatter.app" "$STAGE/FileFormatter.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname FileFormatter -srcfolder "$STAGE" -ov -format UDZO "dist/FileFormatter-$VERSION.dmg" >/dev/null
+rm -rf "$STAGE"
 (cd dist && shasum -a 256 "FileFormatter-$VERSION.zip" "FileFormatter-$VERSION.dmg" > checksums.txt)
 echo "packaged dist/FileFormatter-$VERSION.dmg"
 cat dist/checksums.txt
