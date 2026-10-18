@@ -46,6 +46,34 @@ struct ConversionIntegrationTests {
         #expect(type == UTType.jpeg.identifier)
     }
 
+    @Test func convertsPNGToEveryImageTarget() async throws {
+        for target in ConversionTarget.allCases {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("FileFormatterTargets-\(target.rawValue)-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let source = directory.appendingPathComponent("fixture.png")
+            try makePNG(at: source)
+
+            let service = ConversionService()
+            let plan = try await service.makePlan(urls: [source], target: target, suffix: "-out")
+            let item = try #require(plan.items.first, "missing plan for \(target)")
+
+            let result = try await service.convert(
+                item,
+                options: ConversionOptions(
+                    target: target,
+                    quality: 0.85,
+                    suffix: "-out",
+                    preserveMetadata: true
+                )
+            )
+            #expect(FileManager.default.fileExists(atPath: result.url.path), "\(target) output missing")
+            #expect(result.outputBytes > 0, "\(target) output empty")
+        }
+    }
+
     private func makePNG(at url: URL) throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(

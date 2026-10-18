@@ -365,7 +365,7 @@ FileFormatter/
 
 ```bash
 make doctor        # verify Xcode, Rust, SDK, and source pins
-make bootstrap     # build the Rust static XCFramework and verify the app toolchain
+make bootstrap     # build the Rust static archive + bindings, generate the project
 make bootstrap-media  # build LGPL FFmpeg helpers (needed from M3)
 make build         # xcodebuild (Debug)
 make test          # cargo test + swift test + xcodebuild test
@@ -383,7 +383,7 @@ Estimates are focused working days for one experienced macOS engineer, assuming 
 
 ### M0 — Foundation (2–3 days)
 
-- Xcode project, Swift packages, Rust workspace, static XCFramework + UniFFI bindings, build scripts.
+- Xcode project, Swift packages, Rust workspace, static archive + UniFFI bindings, build scripts.
 - FFmpeg LGPL build script scaffolded (binaries land in M3, when media needs them).
 - Capability registry v0 with images.
 - App shell: sidebar, empty state, queue table, inspector skeleton, design tokens.
@@ -475,7 +475,7 @@ Rules: no agent edits another stream's directory; shared types live in `FileForm
 | WebP encode unavailable from ImageIO | Missing promised output | Bundle libwebp (BSD), not a workaround |
 | Native Office expectations | Users expect layout fidelity | Clearly label Office extraction as text/images; no Office → PDF promise |
 | PDF "compression" quality | Rasterized text, angry users | Ship merge/split/render/OCR first; rasterizing compression is labeled and opt-in |
-| Rust/FFI build fragility | Slow builds, link errors | Static XCFramework built by script; synchronous UniFFI surface; `catch_unwind`; archive-hash skip; `make doctor` smoke test |
+| Rust/FFI build fragility | Slow builds, link errors | Static archive built by `bootstrap`; synchronous UniFFI surface; `catch_unwind`; `make test` smoke test |
 | UniFFI async/Swift 6 friction | Data races or compile failures | Sync API only; long work chunked with cooperative cancellation; no CFType graphs across FFI |
 | Watch folder duplicate runs | Repeated conversions | Stability checks, content-hash dedupe per rule, journaled watch events |
 | OCR accuracy / large PDFs | Memory spikes, disappointment | Page-at-a-time rendering, cancellation, confidence display, "text layer only" option |
