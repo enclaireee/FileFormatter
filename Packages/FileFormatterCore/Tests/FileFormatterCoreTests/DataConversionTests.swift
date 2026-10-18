@@ -49,6 +49,38 @@ struct DataConversionTests {
         #expect(rows[0]["name"] as? String == "Ada")
     }
 
+    @Test func convertsCSVToXLSXAndBack() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FileFormatterXLSX-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let table = directory.appendingPathComponent("people.csv")
+        let csv = ["name,role", "Ada,engineer", "Grace,admiral", ""].joined(separator: "\n")
+        try csv.write(to: table, atomically: true, encoding: .utf8)
+
+        let service = ConversionService()
+        let xlsxPlan = try await service.makePlan(urls: [table], target: .xlsx, suffix: "-book")
+        let xlsxItem = try #require(xlsxPlan.items.first)
+        #expect(xlsxItem.outputName == "people-book.xlsx")
+        let xlsxResult = try await service.convert(
+            xlsxItem,
+            options: ConversionOptions(target: .xlsx, quality: 1, suffix: "-book", preserveMetadata: false)
+        )
+        let bytes = try Data(contentsOf: xlsxResult.url)
+        #expect(bytes.starts(with: [0x50, 0x4B]))
+
+        let csvPlan = try await service.makePlan(urls: [xlsxResult.url], target: .csv, suffix: "-table")
+        let csvItem = try #require(csvPlan.items.first)
+        let csvResult = try await service.convert(
+            csvItem,
+            options: ConversionOptions(target: .csv, quality: 1, suffix: "-table", preserveMetadata: false)
+        )
+        let text = try String(contentsOf: csvResult.url, encoding: .utf8)
+        #expect(text.contains("name,role"))
+        #expect(text.contains("Ada,engineer"))
+    }
+
     private func makePNG(at url: URL) throws {
         let width = 8
         let height = 8

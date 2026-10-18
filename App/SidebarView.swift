@@ -1,10 +1,32 @@
 import SwiftUI
 
 struct SidebarView: View {
+    @Bindable var model: AppModel
     @Binding var selection: SidebarSelection?
 
     var body: some View {
         List(selection: $selection) {
+            Section("Presets") {
+                ForEach(Preset.builtIn) { preset in
+                    Button {
+                        model.apply(preset)
+                        selection = .queue
+                    } label: {
+                        HStack(spacing: 8) {
+                            Label(preset.name, systemImage: preset.systemImage)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            if model.activePreset?.id == preset.id {
+                                Image(systemName: "checkmark")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
             Section("Convert") {
                 Label("Queue", systemImage: "square.stack.3d.up")
                     .tag(SidebarSelection.queue)

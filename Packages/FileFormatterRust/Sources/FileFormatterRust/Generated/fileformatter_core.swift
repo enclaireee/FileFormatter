@@ -1123,6 +1123,15 @@ public func detectFile(path: String)throws  -> FileInfo  {
     )
 })
 }
+public func extractOffice(inputPath: String, outputPath: String, targetExtension: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_fileformatter_core_fn_func_extract_office(
+        FfiConverterString.lower(inputPath),
+        FfiConverterString.lower(outputPath),
+        FfiConverterString.lower(targetExtension),uniffiCallStatus
+    )
+}
+}
 
 private enum InitializationResult {
     case ok
@@ -1149,6 +1158,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_fileformatter_core_checksum_func_detect_file() != 14775) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_fileformatter_core_checksum_func_extract_office() != 13384) {
         return InitializationResult.apiChecksumMismatch
     }
 

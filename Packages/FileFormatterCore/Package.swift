@@ -39,7 +39,8 @@ let package = Package(
         .testTarget(
             name: "FileFormatterCoreTests",
             dependencies: ["FileFormatterCore"],
-            path: "Tests/FileFormatterCoreTests"
+            path: "Tests/FileFormatterCoreTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )

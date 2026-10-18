@@ -2,15 +2,18 @@
 
 A native, local-only batch file converter for macOS 26+ on Apple silicon.
 
-**Status: M1 in progress.** M0 proved the spine; M1 has added WebP, mixed image/data queues, data-format conversion, and image → PDF. The remaining M1 work is PDF page extraction, Office extraction, presets, and UI polish.
+**Status: M1 core complete.** M0 proved the spine. M1 adds WebP, mixed-family queues, data conversion, image → PDF, PDF → page images, DOCX/PPTX extraction, XLSX round-trips, and outcome-based presets. Visual QA and the remaining polish are tracked in the plan.
 
 ## What works now
 
 - Drag-and-drop files or folders; `⌘O` file picker.
 - Conversion planning in Rust (content detection, target naming, fidelity classification).
 - Image conversion: JPEG, PNG, HEIC, AVIF, WebP, TIFF → JPEG, PNG, HEIC, AVIF, WebP, TIFF, and one-page PDF.
-- Data conversion: CSV/TSV ↔ JSON ↔ YAML ↔ TOML.
-- Mixed-family queues: images and data get independent targets in the same run.
+- Data conversion: CSV/TSV ↔ JSON ↔ YAML ↔ TOML ↔ XLSX.
+- PDF page extraction to any image target, with one queue row per page.
+- DOCX/PPTX extraction to Markdown, plain text, or HTML (text only).
+- Outcome-based sidebar presets (Web Images, Archive Photos, PDF Pages, Office → Markdown, and more).
+- Mixed-family queues: images, PDFs, data, and documents get independent targets in the same run.
 - Fidelity badges (lossless / re-encode / lossy) and a pre-run plan summary.
 - Same-folder output with a suffix, automatic collision numbering, atomic install.
 - Run journal in Application Support and **Undo Run** from the completion sheet.
@@ -19,7 +22,7 @@ A native, local-only batch file converter for macOS 26+ on Apple silicon.
 
 ## Not yet
 
-PDF page extraction, Office extraction, audio, video, OCR, presets, watch folders, duplicate finder, Finder quick actions, DMG packaging. These are scheduled in [`PRODUCTION-PLAN.md`](PRODUCTION-PLAN.md).
+Audio, video, OCR, watch folders, duplicate finder, Finder quick actions, DMG packaging. PDF merge/split/compression, Office images/styles, and first-sheet-only XLSX are known limits. These are scheduled in [`PRODUCTION-PLAN.md`](PRODUCTION-PLAN.md).
 
 ## Requirements
 
@@ -78,6 +81,16 @@ project.yml                  XcodeGen project definition
 - CSV/TSV are read as a table with a header row. Values are treated as strings so IDs and ZIP codes keep their leading zeros.
 - JSON ↔ CSV requires a top-level array of objects. Nested values are written as compact JSON.
 - YAML and TOML preserve data, not comments or anchors; formatting always changes, so these conversions are labeled re-encode in the queue.
+
+## Presets
+
+The sidebar ships with outcome-based presets: Web Images, Archive Photos, Images → PDF, PDF → PNG Pages, Lossless PNG, Data → JSON, Data → XLSX, and Office → Markdown. A preset sets the per-family targets, quality, and suffix; changing them manually clears the checkmark.
+
+## PDF and Office limits
+
+- PDF pages are rendered at 2× page size, one output file per page. PDF merge/split and true image-level PDF compression are not implemented.
+- DOCX/PPTX extraction preserves paragraph and slide text only; styles, tables beyond their text, images, charts, and layout are reported as lost.
+- XLSX reading uses the first worksheet. XLSX writing supports arrays of objects; formulas and styling are not authored.
 
 ## Privacy
 

@@ -11,11 +11,11 @@
 
 **M0 — Foundation: complete (18 Oct 2026).** The app builds and runs on macOS 27. The debug self-test plans a PNG in Rust, converts it to JPEG through ImageIO, persists the run journal, and undoes the run, all inside the signed app bundle. The UI shell, queue, inspector, fidelity badges, completion sheet, and history are in place.
 
-**M1 — In progress (18 Oct 2026).** Shipped: WebP encoding via vendored libwebp; mixed image/data queues with independent targets; CSV/TSV ↔ JSON ↔ YAML ↔ TOML; image → one-page PDF. The in-app self-test now covers a mixed WebP + CSV→JSON run, journal, and undo. Remaining: PDF page extraction, Office extraction, presets, and polish.
+**M1 — Core complete (18 Oct 2026).** Shipped: WebP encoding via vendored libwebp; mixed image/data/document queues with independent targets; CSV/TSV ↔ JSON ↔ YAML ↔ TOML ↔ XLSX; image → one-page PDF; PDF → per-page images; DOCX/PPTX → Markdown/text/HTML; outcome-based presets. Verified by 13 Rust tests, 10 Swift tests, and the in-app self-test. Remaining M1 polish: visual QA, PDF merge/split/compression, Office images, and richer document markdown.
 
 Deliberate M0 deviation: the private build is **unsandboxed**; see D-004 in `docs/DECISIONS.md`. The Rust bridge links a static archive through a C module rather than a SwiftPM `binaryTarget`; see D-002.
 
-**Next:** finish M1 — PDF page extraction, Office extraction, presets, and UI polish.
+**Next:** M2 — audio.
 
 ## 0. Decisions locked
 
@@ -393,7 +393,7 @@ Estimates are focused working days for one experienced macOS engineer, assuming 
 
 **Gate:** `make bootstrap && make build` produces a signed app that converts an image with atomic output and a journal entry. **Met 18 Oct 2026:** `make test` passes the Rust tests, Swift tests, app build, and the in-bundle self-test (plan → convert → journal → undo).
 
-### M1 — Universal queue, images, PDF, data (in progress)
+### M1 — Universal queue, images, PDF, data (core complete)
 
 - Full queue UX: mixed families, per-family targets, per-file override, preview, fidelity badges.
 - Image engine: formats, resize, profiles, metadata, animation; SVG; RAW.
@@ -401,7 +401,7 @@ Estimates are focused working days for one experienced macOS engineer, assuming 
 - Data: CSV/TSV/JSON/YAML/TOML/XLSX; Office text extraction (DOCX/PPTX → MD/TXT/HTML).
 - Journal, undo, collision handling, fidelity report, presets, history.
 
-**Gate:** 12 mixed fixtures convert with predicted outcomes; undo round-trips; golden tests pass; light/dark screenshots of the empty, queue, inspector, and fidelity report states are reviewed.
+**Gate:** 12 mixed fixtures convert with predicted outcomes; undo round-trips; golden tests pass; light/dark screenshots of the empty, queue, inspector, and fidelity report states are reviewed. **Automated gate met 18 Oct 2026** (13 Rust + 10 Swift tests, in-app self-test); visual screenshot review remains open because screen capture is unavailable in this session.
 
 ### M2 — Audio (3–4 days)
 

@@ -23,7 +23,24 @@ enum ImageConverter {
         let sourceProperties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] ?? [:]
         let orientation = (sourceProperties[kCGImagePropertyOrientation] as? UInt32) ?? 1
         let image = applyOrientation(original, orientation: orientation) ?? original
+        let properties: [CFString: Any] = preserveMetadata ? sourceProperties : [:]
 
+        try encode(
+            image: image,
+            destination: destination,
+            target: target,
+            quality: quality,
+            properties: properties
+        )
+    }
+
+    static func encode(
+        image: CGImage,
+        destination: URL,
+        target: ConversionTarget,
+        quality: Double,
+        properties sourceProperties: [CFString: Any] = [:]
+    ) throws {
         if target == .webp {
             try WebPEncoder.convert(
                 image: image,
@@ -38,7 +55,7 @@ enum ImageConverter {
             return
         }
 
-        var properties: [CFString: Any] = preserveMetadata ? sourceProperties : [:]
+        var properties = sourceProperties
         properties[kCGImagePropertyOrientation] = 1
         if target.supportsQuality {
             properties[kCGImageDestinationLossyCompressionQuality] = min(max(quality, 0.1), 1.0)
@@ -67,13 +84,6 @@ enum ImageConverter {
         try install(temporary: temporary, at: destination)
     }
 
-    private static func applyOrientation(_ image: CGImage, orientation: UInt32) -> CGImage? {
-        guard orientation != 1, orientation <= 8 else { return nil }
-        let input = CIImage(cgImage: image).oriented(forExifOrientation: Int32(orientation))
-        let context = CIContext(options: [.useSoftwareRenderer: false])
-        return context.createCGImage(input, from: input.extent)
-    }
-
     static func install(temporary: URL, at destination: URL) throws {
         let manager = FileManager.default
         if manager.fileExists(atPath: destination.path) {
@@ -81,5 +91,12 @@ enum ImageConverter {
         } else {
             try manager.moveItem(at: temporary, to: destination)
         }
+    }
+
+    private static func applyOrientation(_ image: CGImage, orientation: UInt32) -> CGImage? {
+        guard orientation != 1, orientation <= 8 else { return nil }
+        let input = CIImage(cgImage: image).oriented(forExifOrientation: Int32(orientation))
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+        return context.createCGImage(input, from: input.extent)
     }
 }

@@ -62,3 +62,20 @@ The PDF target assembles a single-page PDF at the image's pixel dimensions, usin
 ## D-013 — Rust staticlib builds without LTO
 
 The archive initially used `lto = "thin"`. Rust 1.95 emits LLVM 22 bitcode that Apple's linker could not resolve for the newly added `convert_data` entry point, even though the dylib contained it. Setting `lto = false` produced object code the linker resolves reliably. Revisit ThinLTO with a matching toolchain or a prebuilt archive later; the performance impact is small for the planning layer.
+
+
+## D-014 — PDF pages are first-class queue items
+
+A PDF expands into one `ConversionItem` per page at plan time, each with `pageIndex`/`pageCount` and its own output name. The renderer uses PDFKit's `PDFPage.thumbnail` at 2× page bounds and feeds the resulting `CGImage` through the same encoder used by images. This gives progress, undo, and fidelity per page. A multi-page PDF therefore reports `extract` fidelity per page, and the run summary lists every output.
+
+## D-015 — Office extraction is text-only and native
+
+DOCX/PPTX are unpacked with `zip` and parsed with `quick-xml`; DOCX takes `word/document.xml`, PPTX walks slide XML. Targets are Markdown, plain text, and HTML. Styles, images, charts, shapes, and layout are not preserved, and the UI says so. XLSX uses `calamine`, first worksheet only. This avoids a 700 MB LibreOffice dependency and is honest about fidelity.
+
+## D-016 — XLSX output uses rust_xlsxwriter
+
+CSV/JSON arrays of objects can be written to XLSX with `rust_xlsxwriter`. Binary XLSX input must not be read as UTF-8; the conversion path branches on the source extension before text decoding. Round-trip tests cover CSV → XLSX → CSV.
+
+## D-017 — Presets are outcome-based, applied in the sidebar
+
+Presets set the per-family targets, quality, and suffix rather than encoding codec details. The sidebar shows a checkmark when the current recipe matches. Presets do not bypass preview: applying one replans the queue.

@@ -17,6 +17,7 @@ final class AppModel {
     var warnings: [String] = []
     var imageTarget: ConversionTarget = .jpeg
     var dataTarget: ConversionTarget = .json
+    var documentTarget: ConversionTarget = .markdown
     var quality: Double = 0.85
     var suffix: String = "-converted"
     var preserveMetadata = true
@@ -37,10 +38,30 @@ final class AppModel {
 
     var isEmpty: Bool { items.isEmpty }
 
+    var activePreset: Preset? {
+        Preset.builtIn.first { preset in
+            preset.imageTarget == imageTarget
+                && preset.dataTarget == dataTarget
+                && preset.documentTarget == documentTarget
+                && preset.suffix == suffix
+                && abs(preset.quality - quality) < 0.001
+        }
+    }
+
+    func apply(_ preset: Preset) {
+        imageTarget = preset.imageTarget
+        dataTarget = preset.dataTarget
+        documentTarget = preset.documentTarget
+        quality = preset.quality
+        suffix = preset.suffix
+        scheduleReplan()
+    }
+
     func target(for kind: FileKind) -> ConversionTarget? {
         switch kind {
         case .image: imageTarget
         case .data: dataTarget
+        case .document: documentTarget
         default: nil
         }
     }
@@ -49,7 +70,14 @@ final class AppModel {
         items.contains { $0.kind == kind }
     }
     var runnableCount: Int { items.filter { $0.status == .pending }.count }
-    var inputBytes: UInt64 { items.reduce(0) { $0 + $1.byteSize } }
+    var inputBytes: UInt64 {
+        var seen = Set<String>()
+        var total: UInt64 = 0
+        for item in items where seen.insert(item.sourceURL.path).inserted {
+            total += item.byteSize
+        }
+        return total
+    }
 
     var fidelityCounts: [(FidelityLevel, Int)] {
         FidelityLevel.allCases.compactMap { level in
@@ -141,7 +169,7 @@ final class AppModel {
             converted: converted,
             skipped: skipped,
             failed: failed,
-            inputBytes: items.reduce(0) { $0 + $1.byteSize },
+            inputBytes: inputBytes,
             outputBytes: outputBytes
         )
         try? await journal.save(summary)
@@ -219,7 +247,11 @@ final class AppModel {
         do {
             let result = try await service.makePlan(
                 urls: urls,
-                targets: TargetRecipe(image: imageTarget, data: dataTarget),
+                targets: TargetRecipe(
+                    image: imageTarget,
+                    data: dataTarget,
+                    document: documentTarget
+                ),
                 suffix: suffix
             )
             items = result.items

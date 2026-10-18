@@ -70,7 +70,7 @@ struct QueueView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(item.displayName)
                             .lineLimit(1)
-                        Text(item.kind.label)
+                        Text(subtitle(for: item))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -108,6 +108,13 @@ struct QueueView: View {
         .onDeleteCommand {
             model.removeSelected()
         }
+    }
+
+    private func subtitle(for item: ConversionItem) -> String {
+        if let page = item.pageIndex {
+            return "PDF · page \(page) of \(item.pageCount ?? page)"
+        }
+        return item.kind.label
     }
 
     private func icon(for kind: FileKind) -> String {

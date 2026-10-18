@@ -6,7 +6,7 @@ struct InspectorView: View {
 
     var body: some View {
         Form {
-            if model.isEmpty || model.hasKind(.image) {
+            if model.isEmpty || model.hasKind(.image) || model.hasKind(.pdf) {
                 Section("Images") {
                     Picker("Convert to", selection: imageBinding) {
                         ForEach(ConversionTarget.imageTargets) { target in
@@ -29,6 +29,14 @@ struct InspectorView: View {
                             .foregroundStyle(.secondary)
                     }
                     Toggle("Preserve metadata", isOn: $model.preserveMetadata)
+
+                    if model.hasKind(.pdf) {
+                        Text(model.imageTarget.family == .image
+                             ? "PDF pages are rendered to this image format."
+                             : "Choose an image format to extract PDF pages.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -40,6 +48,19 @@ struct InspectorView: View {
                         }
                     }
                     Text("CSV and TSV are read as a table with a header row. JSON output is an array of objects; JSON to CSV requires the same shape.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if model.hasKind(.document) {
+                Section("Documents") {
+                    Picker("Convert to", selection: documentBinding) {
+                        ForEach(ConversionTarget.documentTargets) { target in
+                            Text(target.displayName).tag(target)
+                        }
+                    }
+                    Text("DOCX and PPTX are extracted as text. Layout, styles, shapes, charts, and images are not preserved.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -105,6 +126,16 @@ struct InspectorView: View {
         )
     }
 
+    private var documentBinding: Binding<ConversionTarget> {
+        Binding(
+            get: { model.documentTarget },
+            set: { newValue in
+                model.documentTarget = newValue
+                model.scheduleReplan()
+            }
+        )
+    }
+
     private var dataBinding: Binding<ConversionTarget> {
         Binding(
             get: { model.dataTarget },
@@ -118,7 +149,8 @@ struct InspectorView: View {
     private var unsupportedKinds: [String] {
         var seen = Set<String>()
         return model.items.compactMap { item in
-            guard item.kind != .image, item.kind != .data else { return nil }
+            guard item.kind != .image, item.kind != .data,
+                  item.kind != .pdf, item.kind != .document else { return nil }
             return seen.insert(item.kind.label).inserted ? item.kind.label : nil
         }
     }

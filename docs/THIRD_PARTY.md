@@ -18,6 +18,12 @@
 
 See `rust/Cargo.lock`. Direct dependencies: `thiserror` (MIT/Apache-2.0), `uniffi` (MPL-2.0). Development: `tempfile` (MIT/Apache-2.0).
 
+## Data and Office crates
+
+- `csv` (MIT/Unlicense), `serde_json` (MIT/Apache-2.0), `serde_yaml` (MIT/Apache-2.0), `toml` (MIT/Apache-2.0)
+- `zip` (MIT), `quick-xml` (MIT/Apache-2.0), `calamine` (MIT), `rust_xlsxwriter` (MIT/Apache-2.0)
+- All are statically linked into the Rust core; see `rust/Cargo.lock` for exact versions.
+
 ## FFmpeg
 
 Not bundled yet. The planned LGPL-2.1 build, its exact configure line, and the source offer will be added before any audio/video build ships.

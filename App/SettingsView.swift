@@ -22,8 +22,8 @@ struct SettingsView: View {
 
             Section("Supported in this build") {
                 Text("Images: JPEG, PNG, HEIC, AVIF, WebP, TIFF")
-                Text("Data: CSV, TSV, JSON, YAML, TOML")
-                Text("Documents: images → one-page PDF")
+                Text("Data: CSV, TSV, JSON, YAML, TOML ↔ XLSX")
+                Text("Documents: images → one-page PDF; PDF → page images; DOCX/PPTX → Markdown, text, or HTML")
                 Text("More families arrive in the next milestones.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

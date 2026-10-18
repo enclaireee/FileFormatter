@@ -1,5 +1,6 @@
 import Foundation
 import FileFormatterRust
+import PDFKit
 
 public actor ConversionService {
     public init() {}
@@ -30,16 +31,45 @@ public actor ConversionService {
             }
         }
 
-        var planned: [String: ConversionItem] = [:]
+        var planned: [String: [ConversionItem]] = [:]
 
         for (kind, group) in grouped {
+            if kind == .pdf {
+                for url in group {
+                    let key = url.standardizedFileURL.path
+                    guard targets.image.family == .image else {
+                        planned[key] = [skippedItem(
+                            url: url,
+                            kind: kind,
+                            reason: "Choose an image target for PDF pages"
+                        )]
+                        continue
+                    }
+                    do {
+                        planned[key] = try pdfPageItems(
+                            url: url,
+                            target: targets.image,
+                            suffix: suffix
+                        )
+                    } catch {
+                        warnings.append("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
+                        planned[key] = [skippedItem(
+                            url: url,
+                            kind: kind,
+                            reason: error.localizedDescription
+                        )]
+                    }
+                }
+                continue
+            }
+
             guard let target = targets.target(for: kind) else {
                 for url in group {
-                    planned[url.standardizedFileURL.path] = skippedItem(
+                    planned[url.standardizedFileURL.path] = [skippedItem(
                         url: url,
                         kind: kind,
                         reason: "No target for \(kind.label) yet"
-                    )
+                    )]
                 }
                 continue
             }
@@ -58,7 +88,7 @@ public actor ConversionService {
                     let status: ItemStatus = fidelity == .unsupported
                         ? .skipped("Unsupported for \(target.displayName)")
                         : .pending
-                    planned[sourceURL.standardizedFileURL.path] = ConversionItem(
+                    planned[sourceURL.standardizedFileURL.path] = [ConversionItem(
                         sourceURL: sourceURL,
                         displayName: sourceURL.lastPathComponent,
                         kind: Self.map(item.kind),
@@ -67,22 +97,22 @@ public actor ConversionService {
                         fidelity: fidelity,
                         note: item.note,
                         status: status
-                    )
+                    )]
                 }
             } catch {
                 let reason = error.localizedDescription
                 for url in group {
                     warnings.append("Could not plan \(url.lastPathComponent): \(reason)")
-                    planned[url.standardizedFileURL.path] = skippedItem(
+                    planned[url.standardizedFileURL.path] = [skippedItem(
                         url: url,
                         kind: kind,
                         reason: reason
-                    )
+                    )]
                 }
             }
         }
 
-        let items = ordered.compactMap { planned[$0.standardizedFileURL.path] }
+        let items = ordered.flatMap { planned[$0.standardizedFileURL.path] ?? [] }
         return PlanResult(items: items, warnings: warnings)
     }
 
@@ -94,7 +124,8 @@ public actor ConversionService {
     ) throws -> PlanResult {
         let recipe = TargetRecipe(
             image: target.family == .image ? target : .jpeg,
-            data: target.family == .data ? target : .json
+            data: target.family == .data ? target : .json,
+            document: target.family == .document ? target : .markdown
         )
         return try makePlan(urls: urls, targets: recipe, suffix: suffix)
     }
@@ -123,8 +154,28 @@ public actor ConversionService {
                 quality: options.quality,
                 preserveMetadata: options.preserveMetadata
             )
+        case (.pdf, .image):
+            guard let pageNumber = item.pageIndex else {
+                throw ConversionError.unsupportedTarget("PDF page")
+            }
+            let image = try PDFPageRenderer.render(
+                source: item.sourceURL,
+                pageNumber: pageNumber
+            )
+            try ImageConverter.encode(
+                image: image,
+                destination: destination,
+                target: options.target,
+                quality: options.quality
+            )
         case (.data, .data):
             try convertData(
+                source: item.sourceURL,
+                destination: destination,
+                target: options.target
+            )
+        case (.document, .document):
+            try extractOffice(
                 source: item.sourceURL,
                 destination: destination,
                 target: options.target
@@ -159,6 +210,44 @@ public actor ConversionService {
         return (removed, failed)
     }
 
+    private func pdfPageItems(
+        url: URL,
+        target: ConversionTarget,
+        suffix: String
+    ) throws -> [ConversionItem] {
+        guard let document = PDFDocument(url: url) else {
+            throw ConversionError.cannotReadSource(url.lastPathComponent)
+        }
+        guard !document.isLocked else {
+            throw ConversionError.cannotReadSource("\(url.lastPathComponent) is password-protected")
+        }
+        let pageCount = document.pageCount
+        guard pageCount > 0 else {
+            throw ConversionError.cannotReadSource("\(url.lastPathComponent) has no pages")
+        }
+
+        let stem = url.deletingPathExtension().lastPathComponent
+        let ext = target == .jpeg ? "jpg" : target.fileExtension
+        let digits = max(2, String(pageCount).count)
+        let totalBytes = fileSize(url)
+
+        return (1...pageCount).map { page in
+            let number = String(format: "%0\(digits)d", page)
+            return ConversionItem(
+                sourceURL: url,
+                displayName: url.lastPathComponent,
+                kind: .pdf,
+                byteSize: page == 1 ? totalBytes : 0,
+                outputName: "\(stem)\(suffix)-page-\(number).\(ext)",
+                fidelity: .extract,
+                note: "Page \(page) of \(pageCount)",
+                status: .pending,
+                pageIndex: page,
+                pageCount: pageCount
+            )
+        }
+    }
+
     private func convertData(
         source: URL,
         destination: URL,
@@ -172,6 +261,30 @@ public actor ConversionService {
 
         do {
             try FileFormatterRust.convertData(
+                inputPath: source.path,
+                outputPath: temporary.path,
+                targetExtension: target.fileExtension
+            )
+        } catch {
+            throw ConversionError.core(error.localizedDescription)
+        }
+
+        try ImageConverter.install(temporary: temporary, at: destination)
+    }
+
+    private func extractOffice(
+        source: URL,
+        destination: URL,
+        target: ConversionTarget
+    ) throws {
+        let directory = destination.deletingLastPathComponent()
+        let temporary = directory
+            .appendingPathComponent(".fileformatter-\(UUID().uuidString)")
+            .appendingPathExtension(target.fileExtension)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        do {
+            try FileFormatterRust.extractOffice(
                 inputPath: source.path,
                 outputPath: temporary.path,
                 targetExtension: target.fileExtension

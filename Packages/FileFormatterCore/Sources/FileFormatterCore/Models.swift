@@ -23,10 +23,15 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
     case json
     case yaml
     case toml
+    case xlsx
     case pdf
+    case markdown
+    case text
+    case html
 
     public static let imageTargets: [ConversionTarget] = [.jpeg, .png, .heic, .avif, .webp, .tiff, .pdf]
-    public static let dataTargets: [ConversionTarget] = [.csv, .tsv, .json, .yaml, .toml]
+    public static let dataTargets: [ConversionTarget] = [.csv, .tsv, .json, .yaml, .toml, .xlsx]
+    public static let documentTargets: [ConversionTarget] = [.markdown, .text, .html]
 
     public var id: String { rawValue }
 
@@ -43,11 +48,21 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .json: "JSON"
         case .yaml: "YAML"
         case .toml: "TOML"
+        case .xlsx: "XLSX"
         case .pdf: "PDF"
+        case .markdown: "Markdown"
+        case .text: "Plain Text"
+        case .html: "HTML"
         }
     }
 
-    public var fileExtension: String { rawValue }
+    public var fileExtension: String {
+        switch self {
+        case .markdown: "md"
+        case .text: "txt"
+        default: rawValue
+        }
+    }
 
     public var utType: UTType {
         switch self {
@@ -62,22 +77,28 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .json: .json
         case .yaml: UTType(filenameExtension: "yaml") ?? .data
         case .toml: UTType(filenameExtension: "toml") ?? .data
+        case .xlsx: UTType(filenameExtension: "xlsx") ?? .data
         case .pdf: .pdf
+        case .markdown: UTType(filenameExtension: "md") ?? .plainText
+        case .text: .plainText
+        case .html: .html
         }
     }
 
     public var family: FormatFamily {
         switch self {
         case .jpeg, .png, .heic, .avif, .webp, .tiff: .image
-        case .csv, .tsv, .json, .yaml, .toml: .data
+        case .csv, .tsv, .json, .yaml, .toml, .xlsx: .data
         case .pdf: .pdf
+        case .markdown, .text, .html: .document
         }
     }
 
     public var supportsQuality: Bool {
         switch self {
         case .jpeg, .heic, .avif, .webp: true
-        case .png, .tiff, .csv, .tsv, .json, .yaml, .toml, .pdf: false
+        case .png, .tiff, .csv, .tsv, .json, .yaml, .toml, .xlsx, .pdf,
+             .markdown, .text, .html: false
         }
     }
 }
@@ -160,6 +181,8 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
     public var note: String?
     public var status: ItemStatus
     public var outputURL: URL?
+    public let pageIndex: Int?
+    public let pageCount: Int?
 
     public init(
         id: UUID = UUID(),
@@ -171,7 +194,9 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         fidelity: FidelityLevel,
         note: String? = nil,
         status: ItemStatus = .pending,
-        outputURL: URL? = nil
+        outputURL: URL? = nil,
+        pageIndex: Int? = nil,
+        pageCount: Int? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -183,6 +208,8 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         self.note = note
         self.status = status
         self.outputURL = outputURL
+        self.pageIndex = pageIndex
+        self.pageCount = pageCount
     }
 }
 
@@ -199,16 +226,23 @@ public struct PlanResult: Sendable {
 public struct TargetRecipe: Sendable {
     public var image: ConversionTarget
     public var data: ConversionTarget
+    public var document: ConversionTarget
 
-    public init(image: ConversionTarget = .jpeg, data: ConversionTarget = .json) {
+    public init(
+        image: ConversionTarget = .jpeg,
+        data: ConversionTarget = .json,
+        document: ConversionTarget = .markdown
+    ) {
         self.image = image
         self.data = data
+        self.document = document
     }
 
     public func target(for kind: FileKind) -> ConversionTarget? {
         switch kind {
         case .image: image
         case .data: data
+        case .document: document
         default: nil
         }
     }

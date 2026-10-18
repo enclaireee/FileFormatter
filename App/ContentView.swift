@@ -20,13 +20,17 @@ struct ContentView: View {
             UTType(filenameExtension: "tsv") ?? .text,
             .json,
             UTType(filenameExtension: "yaml") ?? .data,
-            UTType(filenameExtension: "toml") ?? .data
+            UTType(filenameExtension: "toml") ?? .data,
+            UTType(filenameExtension: "docx") ?? .data,
+            UTType(filenameExtension: "pptx") ?? .data,
+            UTType(filenameExtension: "xlsx") ?? .data,
+            UTType(filenameExtension: "xls") ?? .data
         ]
     }
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(selection: $selection)
+            SidebarView(model: model, selection: $selection)
         } detail: {
             detail
                 .inspector(isPresented: $showInspector) {
