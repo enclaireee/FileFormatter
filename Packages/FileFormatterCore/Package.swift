@@ -1,5 +1,10 @@
 // swift-tools-version: 6.0
+import Foundation
 import PackageDescription
+
+let packageDirectory = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .path
 
 let package = Package(
     name: "FileFormatterCore",
@@ -12,9 +17,22 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "CWebP",
+            path: "Sources/CWebP",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L\(packageDirectory)/Vendor",
+                    "-lwebp",
+                    "-lsharpyuv"
+                ])
+            ]
+        ),
+        .target(
             name: "FileFormatterCore",
             dependencies: [
-                .product(name: "FileFormatterRust", package: "FileFormatterRust")
+                .product(name: "FileFormatterRust", package: "FileFormatterRust"),
+                "CWebP"
             ],
             path: "Sources/FileFormatterCore"
         ),

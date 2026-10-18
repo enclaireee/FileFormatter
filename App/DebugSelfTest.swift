@@ -33,43 +33,62 @@ enum AppSelfTest {
             let fixture = try DebugFixture.makePNG()
             log("fixture=\(fixture.path)")
 
+            let csv = try DebugFixture.makeCSV()
             let service = ConversionService()
             let plan = try await service.makePlan(
-                urls: [fixture],
-                target: .jpeg,
+                urls: [fixture, csv],
+                targets: TargetRecipe(image: .webp, data: .json),
                 suffix: "-selftest"
             )
-            guard let item = plan.items.first else {
-                log("FAIL no plan item")
+            guard plan.items.count == 2,
+                  let imageItem = plan.items.first(where: { $0.kind == .image }),
+                  let dataItem = plan.items.first(where: { $0.kind == .data }) else {
+                log("FAIL unexpected plan size=\(plan.items.count)")
                 exit(1)
             }
-            log("plan=\(item.outputName) fidelity=\(item.fidelity.rawValue)")
+            log("plan image=\(imageItem.outputName)/\(imageItem.fidelity.rawValue) data=\(dataItem.outputName)/\(dataItem.fidelity.rawValue)")
 
-            let result = try await service.convert(
-                item,
+            let imageResult = try await service.convert(
+                imageItem,
                 options: ConversionOptions(
-                    target: .jpeg,
+                    target: .webp,
                     quality: 0.85,
                     suffix: "-selftest",
                     preserveMetadata: true
                 )
             )
-            guard FileManager.default.fileExists(atPath: result.url.path),
-                  result.outputBytes > 0 else {
+            let dataResult = try await service.convert(
+                dataItem,
+                options: ConversionOptions(
+                    target: .json,
+                    quality: 1,
+                    suffix: "-selftest",
+                    preserveMetadata: true
+                )
+            )
+            guard FileManager.default.fileExists(atPath: imageResult.url.path),
+                  imageResult.outputBytes > 0,
+                  FileManager.default.fileExists(atPath: dataResult.url.path),
+                  dataResult.outputBytes > 0 else {
                 log("FAIL output missing")
                 exit(1)
             }
-            log("convert=PASS \(result.url.path) bytes=\(result.outputBytes)")
+            let json = try JSONSerialization.jsonObject(with: Data(contentsOf: dataResult.url)) as? [[String: Any]]
+            guard json?.first?["name"] as? String == "Ada" else {
+                log("FAIL JSON content")
+                exit(1)
+            }
+            log("convert=PASS image=\(imageResult.url.lastPathComponent) data=\(dataResult.url.lastPathComponent)")
 
             let journal = RunJournal()
             let summary = RunSummary(
-                target: "JPEG",
-                outputs: [result.url],
-                converted: 1,
+                target: "Mixed",
+                outputs: [imageResult.url, dataResult.url],
+                converted: 2,
                 skipped: 0,
                 failed: 0,
-                inputBytes: item.byteSize,
-                outputBytes: result.outputBytes
+                inputBytes: imageItem.byteSize + dataItem.byteSize,
+                outputBytes: imageResult.outputBytes + dataResult.outputBytes
             )
             try await journal.save(summary)
             guard await journal.latest()?.id == summary.id else {
@@ -80,7 +99,9 @@ enum AppSelfTest {
 
             let undo = await service.undo(summary)
             try await journal.markUndone(id: summary.id)
-            guard undo.removed == 1, !FileManager.default.fileExists(atPath: result.url.path) else {
+            guard undo.removed == 2,
+                  !FileManager.default.fileExists(atPath: imageResult.url.path),
+                  !FileManager.default.fileExists(atPath: dataResult.url.path) else {
                 log("FAIL undo removed=\(undo.removed) failed=\(undo.failed)")
                 exit(1)
             }
@@ -95,6 +116,15 @@ enum AppSelfTest {
 }
 
 enum DebugFixture {
+    static func makeCSV() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FileFormatterSelfTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("people.csv")
+        try "name,role\nAda,engineer\nGrace,admiral\n".write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
     static func makePNG() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("FileFormatterSelfTest-\(UUID().uuidString)", isDirectory: true)

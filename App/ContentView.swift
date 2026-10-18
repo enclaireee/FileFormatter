@@ -1,5 +1,6 @@
 import FileFormatterCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum SidebarSelection: Hashable {
     case queue
@@ -10,6 +11,18 @@ struct ContentView: View {
     @Bindable var model: AppModel
     @State private var selection: SidebarSelection? = .queue
     @State private var showInspector = true
+
+    private var importTypes: [UTType] {
+        [
+            .image,
+            .pdf,
+            .commaSeparatedText,
+            UTType(filenameExtension: "tsv") ?? .text,
+            .json,
+            UTType(filenameExtension: "yaml") ?? .data,
+            UTType(filenameExtension: "toml") ?? .data
+        ]
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -61,7 +74,7 @@ struct ContentView: View {
         }
         .fileImporter(
             isPresented: $model.showImporter,
-            allowedContentTypes: [.image, .pdf],
+            allowedContentTypes: importTypes,
             allowsMultipleSelection: true
         ) { result in
             switch result {

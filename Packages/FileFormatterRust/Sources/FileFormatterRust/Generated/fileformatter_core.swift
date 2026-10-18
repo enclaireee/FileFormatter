@@ -723,6 +723,8 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case UnsupportedTarget(`extension`: String
     )
     case EmptyBatch
+    case Conversion(message: String
+    )
 
     
 
@@ -762,6 +764,9 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             `extension`: try FfiConverterString.read(from: &buf)
             )
         case 4: return .EmptyBatch
+        case 5: return .Conversion(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -792,6 +797,11 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case .EmptyBatch:
             writeInt(&buf, Int32(4))
         
+        
+        case let .Conversion(message):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
+            
         }
     }
 }
@@ -1089,6 +1099,15 @@ public func buildPlan(paths: [String], targetExtension: String, suffix: String)t
     )
 })
 }
+public func convertData(inputPath: String, outputPath: String, targetExtension: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_fileformatter_core_fn_func_convert_data(
+        FfiConverterString.lower(inputPath),
+        FfiConverterString.lower(outputPath),
+        FfiConverterString.lower(targetExtension),uniffiCallStatus
+    )
+}
+}
 public func coreVersion() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1121,6 +1140,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_fileformatter_core_checksum_func_build_plan() != 46157) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_fileformatter_core_checksum_func_convert_data() != 1662) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_fileformatter_core_checksum_func_core_version() != 41758) {

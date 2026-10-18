@@ -248,6 +248,11 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
 RustBuffer uniffi_fileformatter_core_fn_func_build_plan(RustBuffer paths, RustBuffer target_extension, RustBuffer suffix, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_CONVERT_DATA
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_CONVERT_DATA
+void uniffi_fileformatter_core_fn_func_convert_data(RustBuffer input_path, RustBuffer output_path, RustBuffer target_extension, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_CORE_VERSION
 #define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_CORE_VERSION
 RustBuffer uniffi_fileformatter_core_fn_func_core_version(RustCallStatus *_Nonnull out_status
@@ -522,6 +527,12 @@ void ffi_fileformatter_core_rust_future_complete_void(uint64_t handle, RustCallS
 #ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_BUILD_PLAN
 #define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_BUILD_PLAN
 uint16_t uniffi_fileformatter_core_checksum_func_build_plan(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_CONVERT_DATA
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_CONVERT_DATA
+uint16_t uniffi_fileformatter_core_checksum_func_convert_data(void
     
 );
 #endif

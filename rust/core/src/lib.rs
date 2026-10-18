@@ -19,6 +19,8 @@ pub enum CoreError {
     UnsupportedTarget { extension: String },
     #[error("no files supplied")]
     EmptyBatch,
+    #[error("conversion failed: {message}")]
+    Conversion { message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -92,6 +94,129 @@ pub fn detect_file(path: String) -> Result<FileInfo, CoreError> {
 }
 
 #[uniffi::export]
+pub fn convert_data(
+    input_path: String,
+    output_path: String,
+    target_extension: String,
+) -> Result<(), CoreError> {
+    let source = extension_of(Path::new(&input_path));
+    let target = normalize_extension(&target_extension)?;
+
+    if !is_data_extension(&source) || !is_data_extension(&target) {
+        return Err(CoreError::UnsupportedTarget {
+            extension: target,
+        });
+    }
+
+    let input = fs::read_to_string(&input_path).map_err(|_| CoreError::Io {
+        path: input_path.clone(),
+    })?;
+    let input = input.trim_start_matches('\u{feff}');
+
+    let value = match source.as_str() {
+        "json" => serde_json::from_str(input).map_err(conversion_error)?,
+        "yaml" | "yml" => serde_yaml::from_str(input).map_err(conversion_error)?,
+        "toml" => toml::from_str(input).map_err(conversion_error)?,
+        "csv" => csv_to_json(input, b',').map_err(conversion_error)?,
+        "tsv" => csv_to_json(input, b'\t').map_err(conversion_error)?,
+        other => {
+            return Err(CoreError::UnsupportedTarget {
+                extension: other.to_string(),
+            })
+        }
+    };
+
+    let output = match target.as_str() {
+        "json" => serde_json::to_string_pretty(&value).map_err(conversion_error)? + "\n",
+        "yaml" => serde_yaml::to_string(&value).map_err(conversion_error)?,
+        "toml" => toml::to_string_pretty(&value).map_err(conversion_error)?,
+        "csv" => json_to_csv(&value, b',').map_err(conversion_error)?,
+        "tsv" => json_to_csv(&value, b'\t').map_err(conversion_error)?,
+        other => {
+            return Err(CoreError::UnsupportedTarget {
+                extension: other.to_string(),
+            })
+        }
+    };
+
+    fs::write(&output_path, output).map_err(|_| CoreError::Io {
+        path: output_path,
+    })
+}
+
+const DATA_EXTENSIONS: [&str; 5] = ["csv", "tsv", "json", "yaml", "toml"];
+
+fn is_data_extension(extension: &str) -> bool {
+    DATA_EXTENSIONS.contains(&extension)
+}
+
+fn conversion_error(error: impl std::fmt::Display) -> CoreError {
+    CoreError::Conversion {
+        message: error.to_string(),
+    }
+}
+
+fn csv_to_json(input: &str, delimiter: u8) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .flexible(true)
+        .from_reader(input.as_bytes());
+    let headers = reader.headers()?.clone();
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let record = record?;
+        let mut object = serde_json::Map::new();
+        for (index, header) in headers.iter().enumerate() {
+            let key = if header.trim().is_empty() {
+                format!("column_{}", index + 1)
+            } else {
+                header.to_string()
+            };
+            object.insert(
+                key,
+                serde_json::Value::String(record.get(index).unwrap_or_default().to_string()),
+            );
+        }
+        rows.push(serde_json::Value::Object(object));
+    }
+    Ok(serde_json::Value::Array(rows))
+}
+
+fn json_to_csv(
+    value: &serde_json::Value,
+    delimiter: u8,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let rows = value
+        .as_array()
+        .ok_or("CSV output requires a JSON array of objects")?;
+    let mut headers: Vec<String> = Vec::new();
+    for row in rows {
+        let object = row.as_object().ok_or("CSV output requires an array of objects")?;
+        for key in object.keys() {
+            if !headers.contains(key) {
+                headers.push(key.clone());
+            }
+        }
+    }
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(delimiter)
+        .from_writer(Vec::new());
+    writer.write_record(&headers)?;
+    for row in rows {
+        let object = row.as_object().ok_or("CSV output requires an array of objects")?;
+        let fields = headers.iter().map(|header| match object.get(header) {
+            None | Some(serde_json::Value::Null) => String::new(),
+            Some(serde_json::Value::String(value)) => value.clone(),
+            Some(serde_json::Value::Bool(value)) => value.to_string(),
+            Some(serde_json::Value::Number(value)) => value.to_string(),
+            Some(other) => serde_json::to_string(other).unwrap_or_default(),
+        });
+        writer.write_record(fields)?;
+    }
+    Ok(String::from_utf8(writer.into_inner()?)?)
+}
+
+#[uniffi::export]
 pub fn build_plan(
     paths: Vec<String>,
     target_extension: String,
@@ -148,7 +273,8 @@ pub fn build_plan(
 fn normalize_extension(value: &str) -> Result<String, CoreError> {
     let ext = value.trim().trim_start_matches('.').to_ascii_lowercase();
     match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "tif" | "tiff" | "heic" | "avif" | "webp" | "pdf" => Ok(ext),
+        "jpg" | "jpeg" | "png" | "tif" | "tiff" | "heic" | "avif" | "webp" | "pdf"
+        | "csv" | "tsv" | "json" | "yaml" | "toml" => Ok(ext),
         _ => Err(CoreError::UnsupportedTarget { extension: ext }),
     }
 }
@@ -202,6 +328,17 @@ fn animation_note(ext: &str) -> Option<String> {
 }
 
 fn fidelity_for(kind: FileKind, source_ext: &str, target: &str) -> Fidelity {
+    if kind == FileKind::Data {
+        return if is_data_extension(target) {
+            if source_ext == target {
+                Fidelity::Lossless
+            } else {
+                Fidelity::Reencode
+            }
+        } else {
+            Fidelity::Unsupported
+        };
+    }
     if kind != FileKind::Image && kind != FileKind::Pdf {
         return Fidelity::Unsupported;
     }
@@ -370,6 +507,65 @@ mod tests {
             "photo-web.webp"
         );
         assert_eq!(output_file_name("photo", "-web", "jpeg"), "photo-web.jpg");
+    }
+
+    #[test]
+    fn converts_csv_to_json_and_back() {
+        let mut input = NamedTempFile::with_suffix(".csv").expect("csv");
+        input.write_all(b"name,role\nAda,engineer\nGrace,admiral\n").expect("write csv");
+        input.flush().expect("flush");
+        let json = NamedTempFile::with_suffix(".json").expect("json");
+        convert_data(
+            input.path().to_string_lossy().into_owned(),
+            json.path().to_string_lossy().into_owned(),
+            "json".to_string(),
+        )
+        .expect("csv to json");
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(json.path()).expect("read json")).expect("parse json");
+        assert_eq!(value.as_array().expect("array").len(), 2);
+        assert_eq!(value[0]["name"], "Ada");
+
+        let csv = NamedTempFile::with_suffix(".csv").expect("csv out");
+        convert_data(
+            json.path().to_string_lossy().into_owned(),
+            csv.path().to_string_lossy().into_owned(),
+            "csv".to_string(),
+        )
+        .expect("json to csv");
+        let text = fs::read_to_string(csv.path()).expect("read csv");
+        assert!(text.contains("name,role"));
+        assert!(text.contains("Ada,engineer"));
+    }
+
+    #[test]
+    fn converts_yaml_to_json() {
+        let mut input = NamedTempFile::with_suffix(".yaml").expect("yaml");
+        input.write_all(b"name: Ada\nrole: engineer\n").expect("write yaml");
+        input.flush().expect("flush");
+        let json = NamedTempFile::with_suffix(".json").expect("json");
+        convert_data(
+            input.path().to_string_lossy().into_owned(),
+            json.path().to_string_lossy().into_owned(),
+            "json".to_string(),
+        )
+        .expect("yaml to json");
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(json.path()).expect("read json")).expect("parse json");
+        assert_eq!(value["name"], "Ada");
+    }
+
+    #[test]
+    fn rejects_image_to_data() {
+        let file = file_with_bytes(&[0x89, b'P', b'N', b'G'], ".png");
+        let output = NamedTempFile::with_suffix(".json").expect("json");
+        let error = convert_data(
+            file.path().to_string_lossy().into_owned(),
+            output.path().to_string_lossy().into_owned(),
+            "json".to_string(),
+        )
+        .expect_err("must reject");
+        assert!(matches!(error, CoreError::UnsupportedTarget { .. }));
     }
 
     #[test]

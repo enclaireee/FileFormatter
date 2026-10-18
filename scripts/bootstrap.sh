@@ -24,6 +24,18 @@ cargo run --locked --release -q --bin uniffi-bindgen -- \
   --language swift \
   --out-dir "$BUILD_DIR/uniffi"
 
+echo "==> Vendoring libwebp (BSD-3)"
+WEBP_PREFIX="$(brew --prefix webp 2>/dev/null || true)"
+if [ -z "$WEBP_PREFIX" ]; then
+  echo "error: webp is required (brew install webp)"; exit 1
+fi
+mkdir -p "$ROOT/Packages/FileFormatterCore/Vendor"
+rm -f "$ROOT/Packages/FileFormatterCore/Vendor/libwebp.a"
+rm -f "$ROOT/Packages/FileFormatterCore/Vendor/libsharpyuv.a"
+cp "$WEBP_PREFIX/lib/libwebp.a" "$ROOT/Packages/FileFormatterCore/Vendor/"
+cp "$WEBP_PREFIX/lib/libsharpyuv.a" "$ROOT/Packages/FileFormatterCore/Vendor/"
+chmod u+w "$ROOT/Packages/FileFormatterCore/Vendor/"*.a
+
 echo "==> Updating the Swift package bridge"
 mkdir -p "$PACKAGE_RUST/Sources/FileFormatterRust/Generated"
 mkdir -p "$PACKAGE_RUST/Sources/CFFI/include"
@@ -38,10 +50,13 @@ cp "$BUILD_DIR/uniffi/fileformatter_coreFFI.modulemap" \
    "$PACKAGE_RUST/Sources/CFFI/include/module.modulemap"
 cp "$BUILD_DIR/uniffi/fileformatter_coreFFI.h" "$BUILD_DIR/headers/"
 cp "$BUILD_DIR/uniffi/fileformatter_coreFFI.modulemap" "$BUILD_DIR/headers/"
+rm -f "$PACKAGE_RUST/Vendor/libfileformatter_core.a"
 cp "$RUST_DIR/target/$RUST_TARGET/release/libfileformatter_core.a" \
    "$PACKAGE_RUST/Vendor/libfileformatter_core.a"
+chmod u+w "$PACKAGE_RUST/Vendor/libfileformatter_core.a"
 
 echo "==> Generating the Xcode project"
+cd "$ROOT"
 xcodegen generate
 
 echo "bootstrap complete"

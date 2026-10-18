@@ -41,3 +41,24 @@ M0 proves the spine with images. WebP, PDF, data/Office, audio, video, OCR, watc
 ## D-009 — Debug self-test
 
 `--self-test` is compiled only in DEBUG. It creates a PNG, plans it through Rust, converts to JPEG through ImageIO, writes and reads the journal, undoes the run, and exits with status 0. This is the CI smoke test until UI tests land.
+
+
+## D-010 — WebP is encoded through a C shim over vendored libwebp
+
+ImageIO reads WebP but cannot write it on macOS 27, and the Homebrew FFmpeg build has no WebP encoder. WebP output therefore uses libwebp 1.6.0 (BSD-3), vendored as `libwebp.a` + `libsharpyuv.a` and called through a small C shim (`CWebP`). The shim accepts straight RGBA, allows explicit quality, and is covered by the all-targets image test.
+
+The archives come from Homebrew in `bootstrap`; a pinned source build is the next reproducibility step. Headers and the license are committed; the `.a` files are gitignored.
+
+## D-011 — Data conversion is UTF-8, header-row, string-preserving
+
+CSV/TSV ↔ JSON ↔ YAML ↔ TOML is implemented in Rust. Values read from a table are kept as strings so identifiers like `00501` do not become integers. JSON → CSV requires an array of objects. YAML comments/anchors and TOML comments are not preserved; those conversions are labeled re-encode.
+
+XLSX and Office extraction are not part of this slice.
+
+## D-012 — Images → PDF is one page per image
+
+The PDF target assembles a single-page PDF at the image's pixel dimensions, using Core Graphics. It does not combine multiple images into one PDF yet. PDF input/page extraction is deferred to the next M1 slice, because it needs a multi-output queue item.
+
+## D-013 — Rust staticlib builds without LTO
+
+The archive initially used `lto = "thin"`. Rust 1.95 emits LLVM 22 bitcode that Apple's linker could not resolve for the newly added `convert_data` entry point, even though the dylib contained it. Setting `lto = false` produced object code the linker resolves reliably. Revisit ThinLTO with a matching toolchain or a prebuilt archive later; the performance impact is small for the planning layer.

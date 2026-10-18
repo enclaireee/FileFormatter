@@ -11,9 +11,11 @@
 
 **M0 — Foundation: complete (18 Oct 2026).** The app builds and runs on macOS 27. The debug self-test plans a PNG in Rust, converts it to JPEG through ImageIO, persists the run journal, and undoes the run, all inside the signed app bundle. The UI shell, queue, inspector, fidelity badges, completion sheet, and history are in place.
 
+**M1 — In progress (18 Oct 2026).** Shipped: WebP encoding via vendored libwebp; mixed image/data queues with independent targets; CSV/TSV ↔ JSON ↔ YAML ↔ TOML; image → one-page PDF. The in-app self-test now covers a mixed WebP + CSV→JSON run, journal, and undo. Remaining: PDF page extraction, Office extraction, presets, and polish.
+
 Deliberate M0 deviation: the private build is **unsandboxed**; see D-004 in `docs/DECISIONS.md`. The Rust bridge links a static archive through a C module rather than a SwiftPM `binaryTarget`; see D-002.
 
-**Next:** M1 — WebP/libwebp, PDF operations, data formats, Office extraction, presets, and UI polish.
+**Next:** finish M1 — PDF page extraction, Office extraction, presets, and UI polish.
 
 ## 0. Decisions locked
 
@@ -391,7 +393,7 @@ Estimates are focused working days for one experienced macOS engineer, assuming 
 
 **Gate:** `make bootstrap && make build` produces a signed app that converts an image with atomic output and a journal entry. **Met 18 Oct 2026:** `make test` passes the Rust tests, Swift tests, app build, and the in-bundle self-test (plan → convert → journal → undo).
 
-### M1 — Universal queue, images, PDF, data (6–8 days)
+### M1 — Universal queue, images, PDF, data (in progress)
 
 - Full queue UX: mixed families, per-family targets, per-file override, preview, fidelity badges.
 - Image engine: formats, resize, profiles, metadata, animation; SVG; RAW.

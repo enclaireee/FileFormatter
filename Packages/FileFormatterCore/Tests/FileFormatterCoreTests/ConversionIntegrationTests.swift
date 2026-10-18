@@ -47,7 +47,7 @@ struct ConversionIntegrationTests {
     }
 
     @Test func convertsPNGToEveryImageTarget() async throws {
-        for target in ConversionTarget.allCases {
+        for target in ConversionTarget.imageTargets {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("FileFormatterTargets-\(target.rawValue)-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -71,6 +71,10 @@ struct ConversionIntegrationTests {
             )
             #expect(FileManager.default.fileExists(atPath: result.url.path), "\(target) output missing")
             #expect(result.outputBytes > 0, "\(target) output empty")
+
+            let outputSource = CGImageSourceCreateWithURL(result.url as CFURL, nil)
+            let outputType = outputSource.flatMap { CGImageSourceGetType($0) as String? }
+            #expect(outputType == target.utType.identifier, "\(target) produced \(outputType ?? "unknown")")
         }
     }
 

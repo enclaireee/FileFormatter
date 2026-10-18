@@ -5,6 +5,7 @@ dist/
 rust/target/
 Packages/*/.build/
 Packages/FileFormatterRust/Vendor/*.a
+Packages/FileFormatterCore/Vendor/*.a
 Packages/FileFormatterRust/Vendor/*.xcframework/
 DerivedData/
 xcuserdata/

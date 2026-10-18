@@ -6,47 +6,97 @@ public actor ConversionService {
 
     public func makePlan(
         urls: [URL],
-        target: ConversionTarget,
+        targets: TargetRecipe,
         suffix: String
     ) throws -> PlanResult {
         var seen = Set<String>()
-        let paths = urls.compactMap { url -> String? in
+        let ordered = urls.compactMap { url -> URL? in
             let path = url.standardizedFileURL.path
-            return seen.insert(path).inserted ? path : nil
+            return seen.insert(path).inserted ? url : nil
         }
-        guard !paths.isEmpty else {
+        guard !ordered.isEmpty else {
             return PlanResult(items: [], warnings: [])
         }
 
-        let plan: FileFormatterRust.Plan
-        do {
-            plan = try FileFormatterRust.buildPlan(
-                paths: paths,
-                targetExtension: target.fileExtension,
-                suffix: suffix
-            )
-        } catch {
-            throw ConversionError.core(Self.describe(error))
+        var warnings: [String] = []
+        var grouped: [FileKind: [URL]] = [:]
+
+        for url in ordered {
+            do {
+                let info = try FileFormatterRust.detectFile(path: url.standardizedFileURL.path)
+                grouped[Self.map(info.kind), default: []].append(url)
+            } catch {
+                warnings.append("Skipped \(url.lastPathComponent): \(error.localizedDescription)")
+            }
         }
 
-        let items = plan.items.map { planned -> ConversionItem in
-            let sourceURL = URL(fileURLWithPath: planned.sourcePath)
-            let fidelity = Self.map(planned.fidelity)
-            let status: ItemStatus = fidelity == .unsupported
-                ? .skipped("Unsupported for \(target.displayName)")
-                : .pending
-            return ConversionItem(
-                sourceURL: sourceURL,
-                displayName: sourceURL.lastPathComponent,
-                kind: Self.map(planned.kind),
-                byteSize: planned.byteSize,
-                outputName: planned.outputName,
-                fidelity: fidelity,
-                note: planned.note,
-                status: status
-            )
+        var planned: [String: ConversionItem] = [:]
+
+        for (kind, group) in grouped {
+            guard let target = targets.target(for: kind) else {
+                for url in group {
+                    planned[url.standardizedFileURL.path] = skippedItem(
+                        url: url,
+                        kind: kind,
+                        reason: "No target for \(kind.label) yet"
+                    )
+                }
+                continue
+            }
+
+            do {
+                let plan = try FileFormatterRust.buildPlan(
+                    paths: group.map { $0.standardizedFileURL.path },
+                    targetExtension: target.fileExtension,
+                    suffix: suffix
+                )
+                warnings.append(contentsOf: plan.warnings)
+
+                for item in plan.items {
+                    let sourceURL = URL(fileURLWithPath: item.sourcePath)
+                    let fidelity = Self.map(item.fidelity)
+                    let status: ItemStatus = fidelity == .unsupported
+                        ? .skipped("Unsupported for \(target.displayName)")
+                        : .pending
+                    planned[sourceURL.standardizedFileURL.path] = ConversionItem(
+                        sourceURL: sourceURL,
+                        displayName: sourceURL.lastPathComponent,
+                        kind: Self.map(item.kind),
+                        byteSize: item.byteSize,
+                        outputName: item.outputName,
+                        fidelity: fidelity,
+                        note: item.note,
+                        status: status
+                    )
+                }
+            } catch {
+                let reason = error.localizedDescription
+                for url in group {
+                    warnings.append("Could not plan \(url.lastPathComponent): \(reason)")
+                    planned[url.standardizedFileURL.path] = skippedItem(
+                        url: url,
+                        kind: kind,
+                        reason: reason
+                    )
+                }
+            }
         }
-        return PlanResult(items: items, warnings: plan.warnings)
+
+        let items = ordered.compactMap { planned[$0.standardizedFileURL.path] }
+        return PlanResult(items: items, warnings: warnings)
+    }
+
+    /// Compatibility entry point for callers that work with a single family.
+    public func makePlan(
+        urls: [URL],
+        target: ConversionTarget,
+        suffix: String
+    ) throws -> PlanResult {
+        let recipe = TargetRecipe(
+            image: target.family == .image ? target : .jpeg,
+            data: target.family == .data ? target : .json
+        )
+        return try makePlan(urls: urls, targets: recipe, suffix: suffix)
     }
 
     public func convert(
@@ -58,21 +108,32 @@ public actor ConversionService {
             if scoped { item.sourceURL.stopAccessingSecurityScopedResource() }
         }
 
-        guard item.kind == .image else {
-            throw ConversionError.unsupportedTarget(item.kind.label)
-        }
         guard FileManager.default.fileExists(atPath: item.sourceURL.path) else {
             throw ConversionError.cannotReadSource(item.displayName)
         }
 
         let destination = uniqueDestination(for: item)
-        try ImageConverter.convert(
-            source: item.sourceURL,
-            destination: destination,
-            target: options.target,
-            quality: options.quality,
-            preserveMetadata: options.preserveMetadata
-        )
+
+        switch (item.kind, options.target.family) {
+        case (.image, .image), (.image, .pdf):
+            try ImageConverter.convert(
+                source: item.sourceURL,
+                destination: destination,
+                target: options.target,
+                quality: options.quality,
+                preserveMetadata: options.preserveMetadata
+            )
+        case (.data, .data):
+            try convertData(
+                source: item.sourceURL,
+                destination: destination,
+                target: options.target
+            )
+        default:
+            throw ConversionError.unsupportedTarget(
+                "\(item.kind.label) → \(options.target.displayName)"
+            )
+        }
 
         let values = try? destination.resourceValues(forKeys: [.fileSizeKey])
         let size = UInt64(values?.fileSize ?? 0)
@@ -98,16 +159,56 @@ public actor ConversionService {
         return (removed, failed)
     }
 
+    private func convertData(
+        source: URL,
+        destination: URL,
+        target: ConversionTarget
+    ) throws {
+        let directory = destination.deletingLastPathComponent()
+        let temporary = directory
+            .appendingPathComponent(".fileformatter-\(UUID().uuidString)")
+            .appendingPathExtension(target.fileExtension)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        do {
+            try FileFormatterRust.convertData(
+                inputPath: source.path,
+                outputPath: temporary.path,
+                targetExtension: target.fileExtension
+            )
+        } catch {
+            throw ConversionError.core(error.localizedDescription)
+        }
+
+        try ImageConverter.install(temporary: temporary, at: destination)
+    }
+
+    private func skippedItem(url: URL, kind: FileKind, reason: String) -> ConversionItem {
+        ConversionItem(
+            sourceURL: url,
+            displayName: url.lastPathComponent,
+            kind: kind,
+            byteSize: fileSize(url),
+            outputName: url.lastPathComponent,
+            fidelity: .unsupported,
+            note: reason,
+            status: .skipped(reason)
+        )
+    }
+
+    private func fileSize(_ url: URL) -> UInt64 {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+        return UInt64(values?.fileSize ?? 0)
+    }
+
     private func uniqueDestination(for item: ConversionItem) -> URL {
         let directory = item.sourceURL.deletingLastPathComponent()
         var candidate = directory.appendingPathComponent(item.outputName)
 
         if candidate.standardizedFileURL == item.sourceURL.standardizedFileURL {
             let base = item.sourceURL.deletingPathExtension().lastPathComponent
-            let ext = item.outputName as NSString
-            candidate = directory.appendingPathComponent(
-                "\(base)-converted.\(ext.pathExtension)"
-            )
+            let ext = (item.outputName as NSString).pathExtension
+            candidate = directory.appendingPathComponent("\(base)-converted.\(ext)")
         }
 
         guard FileManager.default.fileExists(atPath: candidate.path) else {
@@ -145,12 +246,5 @@ public actor ConversionService {
         case .extract: .extract
         case .unsupported: .unsupported
         }
-    }
-
-    private static func describe(_ error: Error) -> String {
-        if let core = error as? FileFormatterRust.CoreError {
-            return String(describing: core)
-        }
-        return error.localizedDescription
     }
 }

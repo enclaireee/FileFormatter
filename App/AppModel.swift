@@ -15,7 +15,8 @@ final class AppModel {
 
     var items: [ConversionItem] = []
     var warnings: [String] = []
-    var target: ConversionTarget = .jpeg
+    var imageTarget: ConversionTarget = .jpeg
+    var dataTarget: ConversionTarget = .json
     var quality: Double = 0.85
     var suffix: String = "-converted"
     var preserveMetadata = true
@@ -35,6 +36,18 @@ final class AppModel {
     private var replanTask: Task<Void, Never>?
 
     var isEmpty: Bool { items.isEmpty }
+
+    func target(for kind: FileKind) -> ConversionTarget? {
+        switch kind {
+        case .image: imageTarget
+        case .data: dataTarget
+        default: nil
+        }
+    }
+
+    func hasKind(_ kind: FileKind) -> Bool {
+        items.contains { $0.kind == kind }
+    }
     var runnableCount: Int { items.filter { $0.status == .pending }.count }
     var inputBytes: UInt64 { items.reduce(0) { $0 + $1.byteSize } }
 
@@ -51,7 +64,7 @@ final class AppModel {
             guard !expanded.isEmpty else {
                 present(
                     "No supported files",
-                    "Drop images or PDFs. Audio, video, and data arrive in the next milestones."
+                    "Drop images or tabular data (CSV, TSV, JSON, YAML, TOML). PDF, audio, and video arrive in later milestones."
                 )
                 return
             }
@@ -81,13 +94,6 @@ final class AppModel {
         completedCount = 0
         defer { isRunning = false }
 
-        let options = ConversionOptions(
-            target: target,
-            quality: quality,
-            suffix: suffix,
-            preserveMetadata: preserveMetadata
-        )
-
         var outputs: [URL] = []
         var converted = 0
         var skipped = items.filter { item in
@@ -98,8 +104,18 @@ final class AppModel {
 
         for index in items.indices {
             guard items[index].status == .pending else { continue }
+            guard let itemTarget = target(for: items[index].kind) else {
+                items[index].status = .skipped("No target for \(items[index].kind.label) yet")
+                continue
+            }
             items[index].status = .converting
             do {
+                let options = ConversionOptions(
+                    target: itemTarget,
+                    quality: quality,
+                    suffix: suffix,
+                    preserveMetadata: preserveMetadata
+                )
                 let result = try await service.convert(items[index], options: options)
                 items[index].status = .completed
                 items[index].outputURL = result.url
@@ -118,8 +134,9 @@ final class AppModel {
             if case .skipped = item.status { true } else { false }
         }.count
 
+        let usedTargets = Set(items.compactMap { target(for: $0.kind)?.displayName })
         let summary = RunSummary(
-            target: target.displayName,
+            target: usedTargets.count == 1 ? (usedTargets.first ?? "Mixed") : "Mixed",
             outputs: outputs,
             converted: converted,
             skipped: skipped,
@@ -200,7 +217,11 @@ final class AppModel {
         defer { isPlanning = false }
 
         do {
-            let result = try await service.makePlan(urls: urls, target: target, suffix: suffix)
+            let result = try await service.makePlan(
+                urls: urls,
+                targets: TargetRecipe(image: imageTarget, data: dataTarget),
+                suffix: suffix
+            )
             items = result.items
             warnings = result.warnings
         } catch {

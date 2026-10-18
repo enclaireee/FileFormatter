@@ -24,6 +24,20 @@ enum ImageConverter {
         let orientation = (sourceProperties[kCGImagePropertyOrientation] as? UInt32) ?? 1
         let image = applyOrientation(original, orientation: orientation) ?? original
 
+        if target == .webp {
+            try WebPEncoder.convert(
+                image: image,
+                destination: destination,
+                quality: quality
+            )
+            return
+        }
+
+        if target == .pdf {
+            try PDFConverter.convert(image: image, destination: destination)
+            return
+        }
+
         var properties: [CFString: Any] = preserveMetadata ? sourceProperties : [:]
         properties[kCGImagePropertyOrientation] = 1
         if target.supportsQuality {
@@ -60,7 +74,7 @@ enum ImageConverter {
         return context.createCGImage(input, from: input.extent)
     }
 
-    private static func install(temporary: URL, at destination: URL) throws {
+    static func install(temporary: URL, at destination: URL) throws {
         let manager = FileManager.default
         if manager.fileExists(atPath: destination.path) {
             _ = try manager.replaceItemAt(destination, withItemAt: temporary)

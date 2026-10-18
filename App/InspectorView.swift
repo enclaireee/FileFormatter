@@ -6,20 +6,48 @@ struct InspectorView: View {
 
     var body: some View {
         Form {
-            Section("Format") {
-                Picker("Convert to", selection: $model.target) {
-                    ForEach(ConversionTarget.allCases) { target in
-                        Text(target.displayName).tag(target)
+            if model.isEmpty || model.hasKind(.image) {
+                Section("Images") {
+                    Picker("Convert to", selection: imageBinding) {
+                        ForEach(ConversionTarget.imageTargets) { target in
+                            Text(target.displayName).tag(target)
+                        }
                     }
+                    if model.imageTarget == .pdf {
+                        Text("Each image becomes a one-page PDF. Pages keep the source pixel dimensions.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if model.imageTarget.supportsQuality {
+                        LabeledContent("Quality") {
+                            Text("\(Int(model.quality * 100))%")
+                                .monospacedDigit()
+                        }
+                        Slider(value: $model.quality, in: 0.3...1.0)
+                    } else {
+                        Text("Lossless output · quality does not apply.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("Preserve metadata", isOn: $model.preserveMetadata)
                 }
-                if model.target.supportsQuality {
-                    LabeledContent("Quality") {
-                        Text("\(Int(model.quality * 100))%")
-                            .monospacedDigit()
+            }
+
+            if model.hasKind(.data) {
+                Section("Data") {
+                    Picker("Convert to", selection: dataBinding) {
+                        ForEach(ConversionTarget.dataTargets) { target in
+                            Text(target.displayName).tag(target)
+                        }
                     }
-                    Slider(value: $model.quality, in: 0.3...1.0)
-                } else {
-                    Text("Lossless output · quality does not apply.")
+                    Text("CSV and TSV are read as a table with a header row. JSON output is an array of objects; JSON to CSV requires the same shape.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !unsupportedKinds.isEmpty {
+                Section("Other files") {
+                    Text("Not convertible yet: \(unsupportedKinds.joined(separator: ", ")). They stay in the queue as skipped.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -28,7 +56,6 @@ struct InspectorView: View {
             Section("Output") {
                 TextField("Suffix", text: $model.suffix)
                     .onSubmit { model.scheduleReplan() }
-                Toggle("Preserve metadata", isOn: $model.preserveMetadata)
                 LabeledContent("Destination", value: "Same folder")
             }
 
@@ -57,17 +84,42 @@ struct InspectorView: View {
             }
 
             Section {
-                Text("Fidelity is predicted from the source and target. Lossless conversions preserve pixels; re-encoded files may lose detail.")
+                Text("Fidelity is predicted from the source and target. Lossless conversions preserve data; re-encoded files may lose detail or formatting.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .onChange(of: model.target) { _, _ in
-            model.scheduleReplan()
-        }
         .onChange(of: model.suffix) { _, _ in
             model.scheduleReplan()
+        }
+    }
+
+    private var imageBinding: Binding<ConversionTarget> {
+        Binding(
+            get: { model.imageTarget },
+            set: { newValue in
+                model.imageTarget = newValue
+                model.scheduleReplan()
+            }
+        )
+    }
+
+    private var dataBinding: Binding<ConversionTarget> {
+        Binding(
+            get: { model.dataTarget },
+            set: { newValue in
+                model.dataTarget = newValue
+                model.scheduleReplan()
+            }
+        )
+    }
+
+    private var unsupportedKinds: [String] {
+        var seen = Set<String>()
+        return model.items.compactMap { item in
+            guard item.kind != .image, item.kind != .data else { return nil }
+            return seen.insert(item.kind.label).inserted ? item.kind.label : nil
         }
     }
 }
