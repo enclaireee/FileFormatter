@@ -1,0 +1,13 @@
+.DS_Store
+.build/
+build/
+dist/
+rust/target/
+Packages/*/.build/
+Packages/FileFormatterRust/Vendor/*.a
+Packages/FileFormatterRust/Vendor/*.xcframework/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+/tmp/
