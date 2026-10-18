@@ -23,6 +23,16 @@ struct QueueView: View {
                 Text(detailLine)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if !model.isRunning && !model.items.isEmpty {
+                    QuickActionRow(urls: model.items.map(\.sourceURL), limit: 5, controlSize: .small) { action in
+                        Task {
+                            guard let summary = await model.quickRun(urls: model.items.map(\.sourceURL), action: action) else { return }
+                            model.lastSummary = summary
+                            model.showCompletion = true
+                        }
+                    }
+                    .padding(.top, 4)
+                }
             }
             Spacer()
             if model.isPlanning {

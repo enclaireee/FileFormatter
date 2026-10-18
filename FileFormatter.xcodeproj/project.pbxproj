@@ -10,14 +10,19 @@
 		07057B5061150F303062B725 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A711B18628B587689A06519 /* HistoryView.swift */; };
 		20B4073852F3353BBBF5C1C0 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4CB76D0E4B29DA462CD6937 /* SidebarView.swift */; };
 		297937C4C339F806B25245A6 /* FileFormatterCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3AC39FC343B95A2B3171DC1F /* FileFormatterCore */; };
+		3AB3587DA3AF0F33D7A216FE /* RenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 096820B4DD99528FBEF896F7 /* RenameSheet.swift */; };
 		3BAA07603E2FD4F65DBF4BF6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EEFA3B800A2C759F09E2A16F /* Assets.xcassets */; };
+		5A451B8423D1A7DF7BD37DDC /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE94170E3FC700161E4BB06 /* StatusItemController.swift */; };
 		5DADAB6C3FA9CDA74A25A43F /* InspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57DAC922928A2E5D704577D9 /* InspectorView.swift */; };
+		62CDB33AD47B821972674694 /* QuickActionRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 635914C0C1345136E1BBB16C /* QuickActionRow.swift */; };
 		6463770623C22B8FC5401707 /* DuplicatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4F34F0030D7EB78C05B05DC /* DuplicatesView.swift */; };
 		6621027DB1251DE676F171D9 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D3E948B03FCA58AAAF45A24 /* AppModel.swift */; };
+		675327D2B0CE3B41A7819EAA /* QuickActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE729D3282F063757C4015F9 /* QuickActions.swift */; };
 		6788F976DE8F03D2DD34312D /* Notifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ACA2B6E6192D9DF188BC7C0 /* Notifications.swift */; };
 		7A1C3D4173B9F24EDD67057D /* FileFormatterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A142A0F4527C30B75E5DAF9A /* FileFormatterApp.swift */; };
 		8461A2F329F14298FCE74979 /* FidelityBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA921E06FDB837F4F409F8B /* FidelityBadge.swift */; };
 		9610F3589A4B6C3C58C2F7F4 /* DebugSelfTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E73DEA2194F8D065E0310A8 /* DebugSelfTest.swift */; };
+		A14FAD971D9BE1CD7D4EE145 /* QuickConvertView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2387892BFE7607D69097326 /* QuickConvertView.swift */; };
 		B18CBF5D4E196909D7452DD4 /* Presets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38B941C9BE9D8620B0C00909 /* Presets.swift */; };
 		BD080EDB636BA52E80128C54 /* CompletionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9573968A0327816A0D338A59 /* CompletionSheet.swift */; };
 		C07071D80202AA6AE530F491 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E73F45C75E859BEE08A215F /* SettingsView.swift */; };
@@ -29,6 +34,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		096820B4DD99528FBEF896F7 /* RenameSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenameSheet.swift; sourceTree = "<group>"; };
 		0A711B18628B587689A06519 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		1E73DEA2194F8D065E0310A8 /* DebugSelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugSelfTest.swift; sourceTree = "<group>"; };
 		2F2DE2B35AD3B645054AC12C /* WatchFolders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchFolders.swift; sourceTree = "<group>"; };
@@ -39,6 +45,7 @@
 		4E73F45C75E859BEE08A215F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		57DAC922928A2E5D704577D9 /* InspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorView.swift; sourceTree = "<group>"; };
 		5BA921E06FDB837F4F409F8B /* FidelityBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FidelityBadge.swift; sourceTree = "<group>"; };
+		635914C0C1345136E1BBB16C /* QuickActionRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActionRow.swift; sourceTree = "<group>"; };
 		6ACA2B6E6192D9DF188BC7C0 /* Notifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notifications.swift; sourceTree = "<group>"; };
 		6B203A208E8A3D096553CCD1 /* FileFormatterCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FileFormatterCore; path = Packages/FileFormatterCore; sourceTree = SOURCE_ROOT; };
 		8C68DFE4DD7F91774E341651 /* QueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueView.swift; sourceTree = "<group>"; };
@@ -47,7 +54,10 @@
 		A142A0F4527C30B75E5DAF9A /* FileFormatterApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileFormatterApp.swift; sourceTree = "<group>"; };
 		C4F34F0030D7EB78C05B05DC /* DuplicatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicatesView.swift; sourceTree = "<group>"; };
 		C84663781604F1BB05A3B22A /* FileFormatter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FileFormatter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CE729D3282F063757C4015F9 /* QuickActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActions.swift; sourceTree = "<group>"; };
+		D2387892BFE7607D69097326 /* QuickConvertView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickConvertView.swift; sourceTree = "<group>"; };
 		E4CB76D0E4B29DA462CD6937 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		EAE94170E3FC700161E4BB06 /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		EEFA3B800A2C759F09E2A16F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -96,8 +106,13 @@
 				6ACA2B6E6192D9DF188BC7C0 /* Notifications.swift */,
 				38B941C9BE9D8620B0C00909 /* Presets.swift */,
 				8C68DFE4DD7F91774E341651 /* QueueView.swift */,
+				635914C0C1345136E1BBB16C /* QuickActionRow.swift */,
+				CE729D3282F063757C4015F9 /* QuickActions.swift */,
+				D2387892BFE7607D69097326 /* QuickConvertView.swift */,
+				096820B4DD99528FBEF896F7 /* RenameSheet.swift */,
 				4E73F45C75E859BEE08A215F /* SettingsView.swift */,
 				E4CB76D0E4B29DA462CD6937 /* SidebarView.swift */,
+				EAE94170E3FC700161E4BB06 /* StatusItemController.swift */,
 				2F2DE2B35AD3B645054AC12C /* WatchFolders.swift */,
 				74B494B2FF03580CAB9C7108 /* Resources */,
 			);
@@ -234,8 +249,13 @@
 				6788F976DE8F03D2DD34312D /* Notifications.swift in Sources */,
 				B18CBF5D4E196909D7452DD4 /* Presets.swift in Sources */,
 				D28ACDB25AA3368C5BAD44CA /* QueueView.swift in Sources */,
+				62CDB33AD47B821972674694 /* QuickActionRow.swift in Sources */,
+				675327D2B0CE3B41A7819EAA /* QuickActions.swift in Sources */,
+				A14FAD971D9BE1CD7D4EE145 /* QuickConvertView.swift in Sources */,
+				3AB3587DA3AF0F33D7A216FE /* RenameSheet.swift in Sources */,
 				C07071D80202AA6AE530F491 /* SettingsView.swift in Sources */,
 				20B4073852F3353BBBF5C1C0 /* SidebarView.swift in Sources */,
+				5A451B8423D1A7DF7BD37DDC /* StatusItemController.swift in Sources */,
 				E4C7833AC4E170E7854BD966 /* WatchFolders.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -322,7 +342,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.4.0;
+				MARKETING_VERSION = 0.5.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = NO;
@@ -408,7 +428,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.4.0;
+				MARKETING_VERSION = 0.5.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = NO;

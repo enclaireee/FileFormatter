@@ -12,13 +12,14 @@ public enum MediaTarget: String, Sendable, CaseIterable, Hashable {
     case mov
     case mkv
     case webm
+    case gif
 
     public var fileExtension: String { rawValue }
 
     public var isAudio: Bool {
         switch self {
         case .mp3, .m4a, .flac, .wav, .aiff, .opus, .ogg: true
-        case .mp4, .mov, .mkv, .webm: false
+        case .mp4, .mov, .mkv, .webm, .gif: false
         }
     }
 }
@@ -39,6 +40,7 @@ public actor MediaConverter {
         destination: URL,
         format: MediaTarget,
         quality: Double,
+        targetBytes: UInt64? = nil,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws {
         guard let ffmpeg = locator.ffmpegURL else {
@@ -78,7 +80,9 @@ public actor MediaConverter {
                 source: source,
                 destination: destination,
                 format: format,
-                quality: quality
+                quality: quality,
+                targetBytes: targetBytes,
+                duration: duration
             ),
             onStdoutLine: lineHandler
         )
@@ -102,12 +106,20 @@ public actor MediaConverter {
         sink.report(1)
     }
 
-    private nonisolated static func arguments(
+    nonisolated static func arguments(
         source: URL,
         destination: URL,
         format: MediaTarget,
-        quality: Double
+        quality: Double,
+        targetBytes: UInt64? = nil,
+        duration: Double? = nil
     ) -> [String] {
+        // Without a known duration a size target can't become a bitrate, so it is ignored.
+        let sizeTarget: (bytes: UInt64, duration: Double)? = {
+            guard let targetBytes, targetBytes > 0, let duration, duration > 0 else { return nil }
+            return (targetBytes, duration)
+        }()
+
         var arguments = [
             "-hide_banner",
             "-loglevel", "error",
@@ -118,12 +130,17 @@ public actor MediaConverter {
         ]
 
         if format.isAudio {
+            var kbps = audioBitrate(quality)
+            if let t = sizeTarget {
+                let raw = Double(t.bytes) * 8 * 0.95 / t.duration / 1000
+                kbps = (Int(min(max(raw, 48), 320)) / 8) * 8
+            }
             arguments += ["-map", "0:a?", "-map_metadata", "0", "-vn"]
             switch format {
             case .mp3:
-                arguments += ["-c:a", "libmp3lame", "-b:a", "\(audioBitrate(quality))k"]
+                arguments += ["-c:a", "libmp3lame", "-b:a", "\(kbps)k"]
             case .m4a:
-                arguments += ["-c:a", "aac", "-b:a", "\(audioBitrate(quality))k"]
+                arguments += ["-c:a", "aac", "-b:a", "\(kbps)k"]
             case .flac:
                 arguments += ["-c:a", "flac"]
             case .wav:
@@ -131,12 +148,19 @@ public actor MediaConverter {
             case .aiff:
                 arguments += ["-c:a", "pcm_s16be"]
             case .opus:
-                arguments += ["-c:a", "libopus", "-b:a", "\(audioBitrate(quality))k"]
+                arguments += ["-c:a", "libopus", "-b:a", "\(kbps)k"]
             case .ogg:
-                arguments += ["-c:a", "libvorbis", "-b:a", "\(audioBitrate(quality))k"]
+                arguments += ["-c:a", "libvorbis", "-b:a", "\(kbps)k"]
             default:
                 break
             }
+        } else if format == .gif {
+            let (fps, width) = quality >= 0.8 ? (15, 800) : quality <= 0.5 ? (10, 480) : (12, 640)
+            arguments += [
+                "-map", "0:v:0", "-an",
+                "-vf", "fps=\(fps),scale='min(\(width),iw)':-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4",
+                "-loop", "0"
+            ]
         } else {
             arguments += ["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0"]
 
@@ -144,34 +168,39 @@ public actor MediaConverter {
                 arguments += ["-map_chapters", "0", "-map", "0:s?", "-c:s", "copy"]
             }
 
+            var videoKbps: Int?
+            if let t = sizeTarget {
+                let audioKbps = t.bytes <= 25_000_000 ? 96.0 : 128.0
+                let total = Double(t.bytes) * 8 * 0.92 / t.duration / 1000
+                let v = Int(max(150, total - audioKbps))
+                videoKbps = v
+                if v < 600 {
+                    arguments += ["-vf", "scale=-2:'min(480,ih)'"]
+                } else if v < 1500 {
+                    arguments += ["-vf", "scale=-2:'min(720,ih)'"]
+                }
+            }
+            let h264Rate = videoKbps.map {
+                ["-b:v", "\($0)k", "-maxrate", "\(Int(Double($0) * 1.2))k", "-bufsize", "\($0 * 2)k"]
+            } ?? ["-b:v", "4M"]
+
             switch format {
-            case .mp4, .mov:
-                arguments += [
-                    "-c:v", "h264_videotoolbox",
-                    "-allow_sw", "1",
-                    "-b:v", "4M",
+            case .mp4, .mov, .mkv:
+                arguments += ["-c:v", "h264_videotoolbox", "-allow_sw", "1"] + h264Rate + [
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac",
-                    "-b:a", "\(audioBitrate(quality))k",
-                    "-movflags", "+faststart"
+                    "-b:a", "\(sizeTarget == nil ? audioBitrate(quality) : (videoKbps != nil && sizeTarget!.bytes <= 25_000_000 ? 96 : 128))k"
                 ]
-            case .mkv:
-                arguments += [
-                    "-c:v", "h264_videotoolbox",
-                    "-allow_sw", "1",
-                    "-b:v", "4M",
-                    "-pix_fmt", "yuv420p",
-                    "-c:a", "aac",
-                    "-b:a", "\(audioBitrate(quality))k"
-                ]
+                if format != .mkv {
+                    arguments += ["-movflags", "+faststart"]
+                }
             case .webm:
+                arguments += ["-c:v", "libvpx-vp9"]
+                arguments += videoKbps.map { ["-b:v", "\($0)k"] } ?? ["-crf", "32", "-b:v", "0"]
                 arguments += [
-                    "-c:v", "libvpx-vp9",
-                    "-crf", "32",
-                    "-b:v", "0",
                     "-pix_fmt", "yuv420p",
                     "-c:a", "libopus",
-                    "-b:a", "\(audioBitrate(quality))k"
+                    "-b:a", "\(sizeTarget == nil ? audioBitrate(quality) : (sizeTarget!.bytes <= 25_000_000 ? 96 : 128))k"
                 ]
             default:
                 break

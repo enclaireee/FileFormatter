@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 RUST_TARGET="aarch64-apple-darwin"
+# Match the app so C deps (blake3) are not built for the host macOS version.
+export MACOSX_DEPLOYMENT_TARGET="26.0"
 BUILD_DIR="$ROOT/build"
 RUST_DIR="$ROOT/rust"
 PACKAGE_RUST="$ROOT/Packages/FileFormatterRust"

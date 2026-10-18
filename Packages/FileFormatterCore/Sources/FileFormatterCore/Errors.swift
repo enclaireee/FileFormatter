@@ -5,6 +5,7 @@ public enum ConversionError: LocalizedError, Sendable {
     case cannotReadSource(String)
     case cannotCreateDestination(String)
     case writeFailed(String)
+    case notSmaller
     case cancelled
     case core(String)
 
@@ -18,6 +19,8 @@ public enum ConversionError: LocalizedError, Sendable {
             "Could not create \(name). Check that the folder is writable."
         case .writeFailed(let message):
             "The conversion could not be completed. \(message)"
+        case .notSmaller:
+            "Already optimized — compressing would not make this file smaller."
         case .cancelled:
             "The conversion was cancelled."
         case .core(let message):

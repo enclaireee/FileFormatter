@@ -133,6 +133,24 @@ enum AppSelfTest {
                 exit(1)
             }
             log("undo=PASS")
+
+            // Quick actions run without the window queue: one per family.
+            let model = AppModel.shared
+            for (url, action) in [(fixture, QuickAction.compressImage), (csv, .to(.yaml)), (wav, .to(.mp3))] {
+                guard let quick = await model.quickRun(urls: [url], action: action, showsProgress: false),
+                      quick.converted == 1, quick.failed == 0,
+                      let output = quick.outputs.first,
+                      FileManager.default.fileExists(atPath: output.path) else {
+                    log("FAIL quickRun \(action.id)")
+                    exit(1)
+                }
+                _ = await model.undo(quick)
+                guard !FileManager.default.fileExists(atPath: output.path) else {
+                    log("FAIL quick undo \(action.id)")
+                    exit(1)
+                }
+                log("quick=PASS \(action.id) -> \(output.lastPathComponent)")
+            }
             log("SELF-TEST PASS")
             exit(0)
         } catch {

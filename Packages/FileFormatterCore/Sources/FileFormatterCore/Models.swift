@@ -40,8 +40,9 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
     case mov
     case mkv
     case webm
+    case gif
 
-    public static let imageTargets: [ConversionTarget] = [.jpeg, .png, .heic, .avif, .webp, .tiff, .pdf]
+    public static let imageTargets: [ConversionTarget] = [.jpeg, .png, .heic, .avif, .webp, .tiff, .gif, .pdf]
     public static let dataTargets: [ConversionTarget] = [.csv, .tsv, .json, .yaml, .toml, .xlsx]
     public static let documentTargets: [ConversionTarget] = [.markdown, .text, .html]
     public static let audioTargets: [ConversionTarget] = [.mp3, .m4a, .flac, .wav, .aiff, .opus, .ogg]
@@ -79,6 +80,7 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .mov: "QuickTime (H.264)"
         case .mkv: "MKV (H.264)"
         case .webm: "WebM (VP9)"
+        case .gif: "GIF"
         }
     }
 
@@ -121,12 +123,13 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .mov: .quickTimeMovie
         case .mkv: UTType(filenameExtension: "mkv") ?? .movie
         case .webm: UTType(filenameExtension: "webm") ?? .movie
+        case .gif: .gif
         }
     }
 
     public var family: FormatFamily {
         switch self {
-        case .jpeg, .png, .heic, .avif, .webp, .tiff: .image
+        case .jpeg, .png, .heic, .avif, .webp, .tiff, .gif: .image
         case .csv, .tsv, .json, .yaml, .toml, .xlsx: .data
         case .pdf: .pdf
         case .markdown, .text, .html, .searchablePDF: .document
@@ -140,7 +143,7 @@ public enum ConversionTarget: String, CaseIterable, Sendable, Identifiable, Coda
         case .jpeg, .heic, .avif, .webp, .mp3, .m4a, .opus, .ogg,
              .mp4, .mov, .mkv, .webm: true
         case .png, .tiff, .csv, .tsv, .json, .yaml, .toml, .xlsx, .pdf,
-             .markdown, .text, .html, .searchablePDF, .flac, .wav, .aiff: false
+             .markdown, .text, .html, .searchablePDF, .flac, .wav, .aiff, .gif: false
         }
     }
 }
@@ -225,7 +228,9 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
     public var outputURL: URL?
     public let pageIndex: Int?
     public let pageCount: Int?
-    public let ocrPDF: Bool
+    public let pdfMode: PDFMode
+    /// Set for a merge item: every source, in order, combined into one PDF.
+    public let mergeSources: [URL]?
 
     public init(
         id: UUID = UUID(),
@@ -240,7 +245,8 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         outputURL: URL? = nil,
         pageIndex: Int? = nil,
         pageCount: Int? = nil,
-        ocrPDF: Bool = false
+        pdfMode: PDFMode = .pages,
+        mergeSources: [URL]? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -254,7 +260,8 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         self.outputURL = outputURL
         self.pageIndex = pageIndex
         self.pageCount = pageCount
-        self.ocrPDF = ocrPDF
+        self.pdfMode = pdfMode
+        self.mergeSources = mergeSources
     }
 }
 
@@ -301,22 +308,52 @@ public struct TargetRecipe: Sendable {
     }
 }
 
+/// What happens to PDFs in a plan.
+public enum PDFMode: String, Sendable, Codable, CaseIterable, Identifiable {
+    case pages
+    case searchable
+    case split
+    case compress
+    case merge
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .pages: "Pages to images"
+        case .searchable: "Make searchable (OCR)"
+        case .split: "Split into pages"
+        case .compress: "Compress"
+        case .merge: "Merge into one PDF"
+        }
+    }
+}
+
 public struct ConversionOptions: Sendable {
     public var target: ConversionTarget
     public var quality: Double
     public var suffix: String
     public var preserveMetadata: Bool
+    public var maxPixelSize: Int?
+    public var targetBytes: UInt64?
+    public var removeBackground: Bool
 
     public init(
         target: ConversionTarget,
         quality: Double,
         suffix: String,
-        preserveMetadata: Bool
+        preserveMetadata: Bool,
+        maxPixelSize: Int? = nil,
+        targetBytes: UInt64? = nil,
+        removeBackground: Bool = false
     ) {
         self.target = target
         self.quality = quality
         self.suffix = suffix
         self.preserveMetadata = preserveMetadata
+        self.maxPixelSize = maxPixelSize
+        self.targetBytes = targetBytes
+        self.removeBackground = removeBackground
     }
 }
 
@@ -331,6 +368,8 @@ public struct RunSummary: Identifiable, Codable, Sendable {
     public let inputBytes: UInt64
     public let outputBytes: UInt64
     public var undone: Bool
+    /// Batch renames as [from, to] pairs; undo moves them back. Nil for conversions.
+    public var renames: [[URL]]?
 
     public init(
         id: UUID = UUID(),
@@ -342,7 +381,8 @@ public struct RunSummary: Identifiable, Codable, Sendable {
         failed: Int,
         inputBytes: UInt64,
         outputBytes: UInt64,
-        undone: Bool = false
+        undone: Bool = false,
+        renames: [[URL]]? = nil
     ) {
         self.id = id
         self.date = date
@@ -354,6 +394,7 @@ public struct RunSummary: Identifiable, Codable, Sendable {
         self.inputBytes = inputBytes
         self.outputBytes = outputBytes
         self.undone = undone
+        self.renames = renames
     }
 
     public var bytesSaved: Int64 { Int64(inputBytes) - Int64(outputBytes) }

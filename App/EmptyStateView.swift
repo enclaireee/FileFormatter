@@ -15,8 +15,13 @@ struct EmptyStateView: View {
             VStack(spacing: 6) {
                 Text("Drop files to convert")
                     .font(.title2.weight(.semibold))
-                Text("Images, PDFs, and data files. Every change previewed; originals stay safe.")
+                Text("Images, PDFs, CSV/JSON/XLSX/YAML/TOML, DOCX/PPTX, audio, and video. Every change previewed; originals stay safe.")
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text("You can also drop files on the menu bar icon or right-click them in Finder.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
 
             Button("Choose Files…") {

@@ -36,6 +36,21 @@ struct Preset: Identifiable, Hashable, Sendable {
         self.audioTarget = audioTarget
         self.videoTarget = videoTarget
     }
+
+    var job: ConversionJob {
+        ConversionJob(
+            label: name,
+            targets: TargetRecipe(
+                image: imageTarget,
+                data: dataTarget,
+                document: documentTarget,
+                audio: audioTarget,
+                video: videoTarget
+            ),
+            suffix: suffix,
+            quality: quality
+        )
+    }
 }
 
 extension Preset {

@@ -71,17 +71,23 @@ struct ContentView: View {
                 }
                 .help("Add files (⌘O)")
 
-                Button {
-                    Task { await model.run() }
-                } label: {
-                    Label(
-                        model.isRunning ? "Converting" : "Convert \(model.runnableCount)",
-                        systemImage: "play.fill"
-                    )
+                if model.isRunning {
+                    Button(role: .cancel) {
+                        model.cancel()
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                    .help("Stop after the current file (⌘.)")
+                } else {
+                    Button {
+                        model.startRun()
+                    } label: {
+                        Label("Convert \(model.runnableCount)", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.runnableCount == 0)
+                    .help("Convert the queue (⌘↩)")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isRunning || model.runnableCount == 0)
-                .help("Convert the queue (⌘↩)")
             }
         }
         .fileImporter(
@@ -102,6 +108,9 @@ struct ContentView: View {
                 message: Text(alert.message),
                 dismissButton: .default(Text("OK"))
             )
+        }
+        .sheet(isPresented: $model.showRename) {
+            RenameSheet(model: model)
         }
         .sheet(isPresented: $model.showCompletion) {
             CompletionSheet(model: model)
@@ -153,9 +162,11 @@ struct BottomBar: View {
                 Text("\(model.items.count) files · \(ByteCount.string(model.inputBytes))")
                     .monospacedDigit()
             }
-            Button("Save as Preset…") {}
-                .disabled(true)
-                .help("Presets arrive in the next milestone")
+            Button("Rename…") {
+                model.showRename = true
+            }
+            .disabled(model.isEmpty || model.isRunning)
+            .help("Batch rename the files in the queue")
         }
         .font(.caption)
         .foregroundStyle(.secondary)

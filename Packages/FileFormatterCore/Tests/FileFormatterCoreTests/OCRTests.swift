@@ -41,10 +41,10 @@ struct OCRTests {
             urls: [imagePDF],
             targets: TargetRecipe(image: .png, data: .json),
             suffix: "-ocr",
-            ocrPDF: true
+            pdfMode: .searchable
         )
         let item = try #require(plan.items.first)
-        #expect(item.ocrPDF)
+        #expect(item.pdfMode == .searchable)
         #expect(item.outputName == "source-ocr-ocr.pdf")
 
         let result = try await service.convert(

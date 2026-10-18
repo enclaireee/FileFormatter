@@ -100,3 +100,15 @@ The Rust core hashes files in 1 MB buffered chunks with BLAKE3, filters empty fi
 ## D-022 — Release is ad-hoc signed and unsandboxed
 
 `make release` builds arm64-only, bundles and re-signs helpers, creates a DMG and zip, and writes checksums. No Developer ID exists, so Gatekeeper requires right-click → Open on another Mac. Sandboxing is deferred (D-004); notarization is a one-command change once a Developer ID exists.
+
+## D-023 — Background removal uses Apple Vision
+
+`VNGenerateForegroundInstanceMaskRequest` lifts every detected subject and keeps alpha. It is on-device, fast on Apple silicon, and needs no bundled model. Images with no clear subject fail per file with a message instead of producing an empty cutout. A bundled segmentation model was rejected for size and licensing.
+
+## D-024 — Finder actions are Services, not a Finder Sync extension
+
+Each quick action is an `NSServices` entry with `NSUserData` set to a `QuickAction` id, dispatched by one `quickAction:userData:error:` selector into `AppModel.quickRun`. Services need no extension target, sandbox, or entitlements; Finder Sync would add a top-level menu but requires both. Services can be toggled in Keyboard → Services settings.
+
+## D-025 — Office conversion uses a small block model; PDF compress uses the Quartz filter
+
+DOCX/PPTX parse into `Heading`/`Paragraph(runs)`/`ListItem`/`Table`/`Image` blocks, then render to Markdown, HTML, or text. Images are copied to `<stem>_files/` next to the output with sanitized names, and Swift adds that folder to the run outputs so Undo removes it. This supersedes D-015's text-only scope. PDF compression applies `/System/Library/Filters/Reduce File Size.qfilter` through `QuartzFilter`, because PDFKit's write options did not reduce size in testing.

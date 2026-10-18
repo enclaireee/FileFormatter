@@ -30,10 +30,38 @@ struct InspectorView: View {
                     }
                     Toggle("Preserve metadata", isOn: $model.preserveMetadata)
 
+                    Toggle("Remove background", isOn: $model.removeBackground)
+                    Text("Cuts out the main subject with Apple Vision. Fails for files with no clear subject.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if model.removeBackground && model.imageTarget == .jpeg {
+                        Text("JPEG can't keep transparency. Choose PNG, WebP, or HEIC.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    Picker("Resize", selection: $model.maxPixelSize) {
+                        Text("Original").tag(Int?.none)
+                        ForEach([3840, 2560, 1920, 1280, 800], id: \.self) { px in
+                            Text("\(px) px").tag(Int?.some(px))
+                        }
+                    }
+                    if model.imageTarget.supportsQuality {
+                        Picker("Target size", selection: $model.imageTargetBytes) {
+                            Text("None").tag(UInt64?.none)
+                            Text("5 MB").tag(UInt64?.some(5_000_000))
+                            Text("2 MB").tag(UInt64?.some(2_000_000))
+                            Text("1 MB").tag(UInt64?.some(1_000_000))
+                            Text("500 KB").tag(UInt64?.some(500_000))
+                        }
+                    }
+
                     if model.hasKind(.pdf) {
-                        Toggle("OCR PDFs into searchable PDFs", isOn: $model.ocrPDF)
-                        Text(model.ocrPDF
-                             ? "Each PDF becomes one searchable PDF. The image target is ignored for PDFs."
+                        Picker("PDFs", selection: $model.pdfMode) {
+                            ForEach(PDFMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        Text(model.pdfMode != .pages
+                             ? "\(model.pdfMode.label). The image target is ignored for PDFs."
                              : (model.imageTarget.family == .image
                                 ? "PDF pages are rendered to this image format."
                                 : "Choose an image format to extract PDF pages."))
@@ -63,7 +91,7 @@ struct InspectorView: View {
                             Text(target.displayName).tag(target)
                         }
                     }
-                    Text("DOCX and PPTX are extracted as text. Layout, styles, shapes, charts, and images are not preserved.")
+                    Text("DOCX and PPTX keep headings, bold/italic, lists, tables, and images (images go to a <name>_files folder). Plain text stays text-only. Shapes and charts are not preserved.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -94,6 +122,23 @@ struct InspectorView: View {
                     Picker("Convert to", selection: videoBinding) {
                         ForEach(ConversionTarget.videoTargets) { target in
                             Text(target.displayName).tag(target)
+                        }
+                        if !ConversionTarget.videoTargets.contains(.gif) {
+                            Text(ConversionTarget.gif.displayName).tag(ConversionTarget.gif)
+                        }
+                        Divider()
+                        Section("Audio only") {
+                            ForEach(ConversionTarget.audioTargets) { target in
+                                Text(target.displayName).tag(target)
+                            }
+                        }
+                    }
+                    if model.videoTarget.family == .video {
+                        Picker("Compress to", selection: $model.videoTargetBytes) {
+                            Text("Original quality").tag(UInt64?.none)
+                            ForEach([10, 25, 50, 100], id: \.self) { mb in
+                                Text("\(mb) MB").tag(UInt64?.some(UInt64(mb) * 1_000_000))
+                            }
                         }
                     }
                     LabeledContent("Quality") {
@@ -155,9 +200,13 @@ struct InspectorView: View {
         .onChange(of: model.suffix) { _, _ in
             model.scheduleReplan()
         }
-        .onChange(of: model.ocrPDF) { _, _ in
+        .onChange(of: model.pdfMode) { _, _ in
             model.scheduleReplan()
         }
+        .onChange(of: model.removeBackground) { _, _ in model.scheduleReplan() }
+        .onChange(of: model.maxPixelSize) { _, _ in model.scheduleReplan() }
+        .onChange(of: model.imageTargetBytes) { _, _ in model.scheduleReplan() }
+        .onChange(of: model.videoTargetBytes) { _, _ in model.scheduleReplan() }
     }
 
     private var imageBinding: Binding<ConversionTarget> {

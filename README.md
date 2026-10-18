@@ -2,22 +2,31 @@
 
 A native, local-only batch file converter for macOS 26+ on Apple silicon.
 
-**Status: 0.4.0 — feature complete for the private build.** The app converts images, PDFs, Office text, data, audio, and video; runs OCR into searchable PDFs; watches folders; finds duplicates; and exposes Finder Services and a menu bar extra. A signed DMG is produced by `make release`.
+**Status: 0.5.0 — instant convert.** Drop files on the menu bar icon or right-click them in Finder and pick an action; the result lands next to the original. The full window still handles big mixed batches. The app converts images, PDFs, Office documents, data, audio, and video; removes image backgrounds; compresses images, PDFs, and video; merges and splits PDFs; batch renames; runs OCR; watches folders; and finds duplicates. A signed DMG is produced by `make release`.
 
 ## What works now
 
+- **Menu bar drop:** drop files on the menu bar icon (or click it and drop), then one click on a suggested action (Convert to JPEG, Remove Background, Compress, Make PDF, GIF, Extract Audio, …).
+- **Finder right-click:** Services → FileFormatter: Convert to JPEG/PNG, Remove Background, Compress Image, Make PDF, Convert Video to MP4, Make GIF, Extract Audio. A notification offers Show in Finder and Undo.
+- Background removal with Apple Vision (subject lift), transparent PNG/WebP/HEIC output.
+- Image resize (longest side) and compress to a target file size.
+- PDF merge (PDFs and images into one file), split into pages, and compress (Quartz "Reduce File Size").
+- Video → GIF (palette-optimised), extract audio, and compress to 10/25/50/100 MB for sharing.
+- Batch rename with `{name} {n} {n:3} {date} {ext}` tokens, live preview, collision checks, and Undo.
+- Stop a running conversion (`⌘.`); unfinished items stay in the queue.
 - Drag-and-drop files or folders; `⌘O` file picker.
 - Conversion planning in Rust (content detection, target naming, fidelity classification).
 - Image conversion: JPEG, PNG, HEIC, AVIF, WebP, TIFF → JPEG, PNG, HEIC, AVIF, WebP, TIFF, and one-page PDF.
 - Data conversion: CSV/TSV ↔ JSON ↔ YAML ↔ TOML ↔ XLSX.
 - PDF page extraction to any image target, with one queue row per page.
-- DOCX/PPTX extraction to Markdown, plain text, or HTML (text only).
+- DOCX/PPTX to Markdown or HTML with headings, bold/italic, lists, tables, and images (copied to `<name>_files/`); plain text too.
+- XLSX output with a bold frozen header and real numbers; multi-sheet XLSX → JSON keyed by sheet.
 - Audio: MP3, M4A/AAC, FLAC, WAV, AIFF, Opus, OGG Vorbis via FFmpeg, with metadata and chapters where the container supports them.
 - Video: MP4, MOV, MKV (H.264 hardware), WebM (VP9/Opus); audio-track mapping and subtitle copying where supported.
 - OCR: PDFs to searchable PDFs on-device with Vision; extracted text is embedded invisibly.
 - Watch folders: drop a file into a watched folder and it converts with the chosen preset while the app runs.
 - Duplicate finder: BLAKE3 content hashing, grouped results, keep-first cleanup to the Trash.
-- Finder Services, open-with queueing, and a menu bar extra.
+- Open-with queueing and "Open in FileFormatter…" in Finder.
 - Outcome-based sidebar presets across image, data, document, audio, and video families.
 - Mixed-family queues: images, PDFs, data, and documents get independent targets in the same run.
 - Fidelity badges (lossless / re-encode / lossy) and a pre-run plan summary.
@@ -28,7 +37,7 @@ A native, local-only batch file converter for macOS 26+ on Apple silicon.
 
 ## Not yet
 
-PDF merge/split/compression, Office images/styles, XLSX styling/formulas, App Intents/Shortcuts actions, Finder Sync, and notarization/sandboxing remain. The private build is unsandboxed and ad-hoc signed by design; see the decisions log.
+XLSX formulas, Office charts/shapes, App Intents/Shortcuts actions, a Finder Sync top-level menu, saved custom presets, and notarization/sandboxing remain. The private build is unsandboxed and ad-hoc signed by design; see the decisions log.
 
 ## Requirements
 
@@ -58,8 +67,8 @@ The Rust archive and generated bindings are rebuilt by `bootstrap`; the archive 
 
 `make release` produces:
 
-- `dist/FileFormatter-0.4.0.dmg`
-- `dist/FileFormatter-0.4.0.zip`
+- `dist/FileFormatter-0.5.0.dmg`
+- `dist/FileFormatter-0.5.0.zip`
 - `dist/checksums.txt`
 
 The DMG is ad-hoc signed. On a friend's Mac, right-click → Open may be required the first time.
@@ -108,9 +117,9 @@ The sidebar ships with outcome-based presets: Web Images, Archive Photos, Images
 
 ## PDF, Office, and media limits
 
-- PDF pages are rendered at 2× page size, one output file per page, or OCR'd into one searchable PDF. PDF merge/split and true image-level compression are not implemented.
-- DOCX/PPTX extraction preserves paragraph and slide text only; styles, tables beyond their text, images, charts, and layout are not preserved.
-- XLSX reading uses the first worksheet. XLSX writing supports arrays of objects; formulas and styling are not authored.
+- PDF pages are rendered at 2× page size, one output file per page, or OCR'd into one searchable PDF. Compress keeps the original and reports it when the result would not be smaller.
+- DOCX/PPTX keep structure (headings, emphasis, lists, tables, images) but not layout, fonts, charts, or shapes.
+- XLSX → CSV/TSV uses the first non-empty sheet; multi-sheet JSON keys are alphabetical. Formulas are not authored.
 - Video re-encodes rather than remuxing; H.264 hardware encode and VP9/Opus WebM are supported. Subtitle tracks are copied where the container allows.
 - OGG Vorbis output depends on the bundled FFmpeg build (it includes libvorbis).
 

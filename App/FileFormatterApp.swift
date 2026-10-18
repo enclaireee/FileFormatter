@@ -9,6 +9,7 @@ struct FileFormatterApp: App {
         #if DEBUG
         AppSelfTest.runIfRequested()
         #endif
+        Task { @MainActor in StatusItemController.shared.start() }
     }
 
     var body: some Scene {
@@ -26,10 +27,16 @@ struct FileFormatterApp: App {
             }
             CommandMenu("Convert") {
                 Button("Convert Files") {
-                    Task { await model.run() }
+                    model.startRun()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(model.isRunning || model.runnableCount == 0)
+
+                Button("Stop") {
+                    model.cancel()
+                }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(!model.isBusy)
 
                 Divider()
 
@@ -43,46 +50,5 @@ struct FileFormatterApp: App {
         Settings {
             SettingsView()
         }
-
-        MenuBarExtra {
-            MenuBarView(model: model)
-        } label: {
-            Label("FileFormatter", systemImage: "arrow.triangle.2.circlepath")
-        }
-        .menuBarExtraStyle(.menu)
-    }
-}
-
-struct MenuBarView: View {
-    @Bindable var model: AppModel
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        Text(model.isEmpty ? "No files queued" : "\(model.items.count) files · \(model.runnableCount) ready")
-        if model.isRunning {
-            Text("Converting \(model.completedCount)/\(model.totalToConvert)…")
-            Button("Cancel") {}
-                .disabled(true)
-        } else {
-            Button("Convert Queue") {
-                Task { await model.run() }
-            }
-            .disabled(model.runnableCount == 0)
-        }
-        Divider()
-        Button("Open FileFormatter") {
-            openWindow(id: "main")
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        Button("Add Files…") {
-            openWindow(id: "main")
-            model.showImporter = true
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        Divider()
-        Button("Quit FileFormatter") {
-            NSApplication.shared.terminate(nil)
-        }
-        .keyboardShortcut("q")
     }
 }
