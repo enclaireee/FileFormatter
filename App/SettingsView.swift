@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.convertSuffix) private var convertSuffix = ""
     @AppStorage(AppSettings.compressSuffix) private var compressSuffix = "-small"
     @AppStorage(AppSettings.backgroundSuffix) private var backgroundSuffix = "-nobg"
+    @AppStorage(AppSettings.hdBackground) private var hdBackground = true
     @AppStorage(AppSettings.shelfEnabled) private var shelfEnabled = true
     @AppStorage("compress.strength") private var strength = CompressSettings.Strength.balanced
     @AppStorage("compress.targetMB") private var targetMB = 10.0
@@ -71,6 +72,15 @@ struct SettingsView: View {
                 Text("File name endings")
             } footer: {
                 Text("If a file with that name exists, a number is added instead of replacing it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Background removal") {
+                Toggle("HD edges (slower)", isOn: $hdBackground)
+                    .disabled(AppSettings.bundledBackgroundModel == nil)
+                Text(AppSettings.bundledBackgroundModel == nil
+                     ? "The HD model isn't in this build, so Apple Vision is used."
+                     : "Sharper hair and edges with a bundled model, about half a second per image. Off uses Apple Vision, which is instant.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

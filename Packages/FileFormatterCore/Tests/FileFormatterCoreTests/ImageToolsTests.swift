@@ -88,4 +88,49 @@ struct ImageToolsTests {
         context.draw(result, in: CGRect(x: 0, y: 0, width: 1, height: 1))
         #expect(pixel[3] < 255)
     }
+
+    /// Alpha at a corner pixel (0 = fully cut out).
+    private func cornerAlpha(_ image: CGImage) throws -> UInt8 {
+        var pixel = [UInt8](repeating: 255, count: 4)
+        let context = try #require(CGContext(
+            data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.clear(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let corner = try #require(image.cropping(to: CGRect(x: 0, y: 0, width: 1, height: 1)))
+        context.draw(corner, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return pixel[3]
+    }
+
+    @Test func removeBackgroundHDKeepsAlpha() throws {
+        let photo = "/Library/User Pictures/Animals/Eagle.heic"
+        // Fetched by `make bootstrap-model`; not in git.
+        let model = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("../../vendor/birefnet/BiRefNetLite.mlmodelc").standardized
+        guard FileManager.default.fileExists(atPath: photo), FileManager.default.fileExists(atPath: model.path) else {
+            Issue.record("Skipped: needs \(photo) and `make bootstrap-model`.")
+            return
+        }
+        let loaded = try ImageTools.load(URL(fileURLWithPath: photo), maxPixelSize: nil)
+        let result = try ImageTools.removeBackground(loaded.image, hdModel: model)
+        #expect(result.width == loaded.image.width && result.height == loaded.image.height)
+        #expect(try cornerAlpha(result) == 0)
+        // A silent fallback would produce Vision's exact pixels.
+        let vision = try ImageTools.removeBackground(loaded.image)
+        #expect(result.dataProvider?.data as Data? != vision.dataProvider?.data as Data?)
+    }
+
+    @Test func removeBackgroundFallsBackToVisionWhenModelFails() throws {
+        let photo = "/Library/User Pictures/Animals/Eagle.heic"
+        guard FileManager.default.fileExists(atPath: photo) else {
+            Issue.record("Skipped: \(photo) is not present on this Mac.")
+            return
+        }
+        let loaded = try ImageTools.load(URL(fileURLWithPath: photo), maxPixelSize: nil)
+        let missing = URL(fileURLWithPath: "/nonexistent/Model.mlmodelc")
+        let result = try ImageTools.removeBackground(loaded.image, hdModel: missing)
+        #expect(result.width == loaded.image.width && result.height == loaded.image.height)
+        #expect(try cornerAlpha(result) < 255)
+    }
 }

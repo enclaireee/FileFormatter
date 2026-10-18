@@ -3,13 +3,16 @@ ROOT := $(shell pwd)
 CONFIGURATION ?= Debug
 APP := $(ROOT)/.build/DerivedData/Build/Products/$(CONFIGURATION)/FileFormatter.app
 
-.PHONY: bootstrap project build test run selftest release clean
+.PHONY: bootstrap bootstrap-media bootstrap-model project build test run selftest release clean
 
 bootstrap:
 	./scripts/bootstrap.sh
 
 bootstrap-media:
 	./scripts/build-ffmpeg.sh
+
+bootstrap-model:
+	./scripts/fetch-model.sh
 
 project:
 	xcodegen generate

@@ -24,6 +24,14 @@ See `rust/Cargo.lock`. Direct dependencies: `thiserror` (MIT/Apache-2.0), `uniff
 - `zip` (MIT), `quick-xml` (MIT/Apache-2.0), `calamine` (MIT), `rust_xlsxwriter` (MIT/Apache-2.0)
 - All are statically linked into the Rust core; see `rust/Cargo.lock` for exact versions.
 
+## BiRefNet-lite (Core ML)
+
+- License: MIT (model by ZhengPeng7; Core ML conversion by metaclass/miracle2k)
+- Source: https://huggingface.co/ZhengPeng7/BiRefNet_lite (revision 7838f1c), converted build https://huggingface.co/metaclass/birefnet-lite-coreml (fp16compute-fp32io/r1)
+- Use: HD background removal
+- Distribution: compiled `.mlmodelc` in the app's `Resources/Models/`, fetched by `scripts/fetch-model.sh`
+- Full licenses: `docs/licenses/birefnet/`
+
 ## FFmpeg 8.0.1 (LGPL-2.1-or-later)
 
 - Source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz

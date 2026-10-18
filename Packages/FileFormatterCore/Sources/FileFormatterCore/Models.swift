@@ -337,6 +337,8 @@ public struct ConversionOptions: Sendable {
     public var maxPixelSize: Int?
     public var targetBytes: UInt64?
     public var removeBackground: Bool
+    /// Compiled BiRefNet-lite for HD background removal; nil uses Vision.
+    public var backgroundModel: URL?
     /// Where outputs go; nil writes next to the source.
     public var outputDirectory: URL?
 
@@ -348,6 +350,7 @@ public struct ConversionOptions: Sendable {
         maxPixelSize: Int? = nil,
         targetBytes: UInt64? = nil,
         removeBackground: Bool = false,
+        backgroundModel: URL? = nil,
         outputDirectory: URL? = nil
     ) {
         self.target = target
@@ -357,6 +360,7 @@ public struct ConversionOptions: Sendable {
         self.maxPixelSize = maxPixelSize
         self.targetBytes = targetBytes
         self.removeBackground = removeBackground
+        self.backgroundModel = backgroundModel
         self.outputDirectory = outputDirectory
     }
 }

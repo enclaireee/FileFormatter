@@ -9,6 +9,7 @@ enum AppSettings {
     static let convertSuffix = "suffix.convert"
     static let compressSuffix = "suffix.compress"
     static let backgroundSuffix = "suffix.nobg"
+    static let hdBackground = "background.hd"
     static let shelfEnabled = "shelf.enabled"
     static let hotkeyEnabled = "hotkey.enabled"
     static let hotkeyKeyCode = "hotkey.keyCode"
@@ -22,6 +23,7 @@ enum AppSettings {
             convertSuffix: "",
             compressSuffix: "-small",
             backgroundSuffix: "-nobg",
+            hdBackground: true,
             shelfEnabled: true,
             // ⌥⌘F: Carbon key code 3, optionKey | cmdKey.
             hotkeyEnabled: true,
@@ -37,6 +39,11 @@ enum AppSettings {
         string(key).filter { $0 != "/" && $0 != ":" }
     }
     static func bool(_ key: String) -> Bool { UserDefaults.standard.bool(forKey: key) }
+
+    /// The bundled BiRefNet-lite (D-026); nil when missing from this build.
+    static let bundledBackgroundModel = Bundle.main.url(forResource: "BiRefNetLite", withExtension: "mlmodelc", subdirectory: "Models")
+    /// The model background removal should use; nil means Apple Vision.
+    static var backgroundModel: URL? { bool(hdBackground) ? bundledBackgroundModel : nil }
 
     // MARK: Output folder
 

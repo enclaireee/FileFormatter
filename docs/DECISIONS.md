@@ -112,3 +112,7 @@ Each quick action is an `NSServices` entry with `NSUserData` set to a `QuickActi
 ## D-025 — Office conversion uses a small block model; PDF compress uses the Quartz filter
 
 DOCX/PPTX parse into `Heading`/`Paragraph(runs)`/`ListItem`/`Table`/`Image` blocks, then render to Markdown, HTML, or text. Images are copied to `<stem>_files/` next to the output with sanitized names, and Swift adds that folder to the run outputs so Undo removes it. This supersedes D-015's text-only scope. PDF compression applies `/System/Library/Filters/Reduce File Size.qfilter` through `QuartzFilter`, because PDFKit's write options did not reduce size in testing.
+
+## D-026 — HD background removal bundles BiRefNet-lite
+
+This supersedes D-023's rejection of a bundled model. Vision computes its mask at 512 px and stretches it, so edges are soft. In testing it also dropped two of five people in a group photo. BiRefNet-lite (MIT, 1024 px input, Core ML conversion by metaclass/miracle2k, MIT) kept every subject and produced crisp hair edges. On an M5 it takes about 0.6 s per image on `cpuAndGPU`, vs about 0.05 s for Vision. The Neural Engine takes about 110 s to load the model and 5 s per image, and `.all` fails to build a plan, so only `cpuAndGPU` is used. The fp16 package is pinned by SHA-256 and fetched at build time by `make bootstrap-model` (`scripts/fetch-model.sh`). The app still makes no network requests. The DMG grows by about 80 MB. HD is on by default (Settings → Background removal). A missing model, a load or prediction error, or an empty mask falls back to Vision.

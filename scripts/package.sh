@@ -7,6 +7,8 @@ cd "$ROOT"
 APP="$ROOT/.build/DerivedData/Build/Products/Release/FileFormatter.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 
+[ -d "$APP/Contents/Resources/Models/BiRefNetLite.mlmodelc" ] || { echo "error: HD background model missing; run make bootstrap-model"; exit 1; }
+
 rm -rf dist
 mkdir -p dist
 ditto "$APP" "dist/FileFormatter.app"

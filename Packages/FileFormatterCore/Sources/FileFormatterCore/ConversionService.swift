@@ -218,7 +218,7 @@ public actor ConversionService {
             if options.removeBackground || options.maxPixelSize != nil || options.targetBytes != nil {
                 var (image, properties) = try ImageTools.load(item.sourceURL, maxPixelSize: options.maxPixelSize)
                 if options.removeBackground {
-                    image = try ImageTools.removeBackground(image)
+                    image = try ImageTools.removeBackground(image, hdModel: options.backgroundModel)
                 }
                 try ImageTools.encode(
                     image: image,

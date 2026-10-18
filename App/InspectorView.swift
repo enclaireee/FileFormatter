@@ -3,6 +3,7 @@ import SwiftUI
 
 struct InspectorView: View {
     @Bindable var model: AppModel
+    @AppStorage(AppSettings.hdBackground) private var hdBackground = true
 
     var body: some View {
         Form {
@@ -31,7 +32,9 @@ struct InspectorView: View {
                     Toggle("Preserve metadata", isOn: $model.preserveMetadata)
 
                     Toggle("Remove background", isOn: $model.removeBackground)
-                    Text("Cuts out the main subject with Apple Vision. Fails for files with no clear subject.")
+                    Text(!hdBackground || AppSettings.bundledBackgroundModel == nil
+                         ? "Cuts out the main subject with Apple Vision. Fails for files with no clear subject."
+                         : "Cuts out the subject with the HD model. Change it in Settings. Fails for files with no clear subject.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if model.removeBackground && model.imageTarget == .jpeg {

@@ -42,6 +42,7 @@ struct ConversionJob: Sendable {
             // Already under the size goal: convert normally instead of squeezing.
             targetBytes: goal.flatMap { item.byteSize > $0 ? $0 : nil },
             removeBackground: item.kind == .image && removeBackground,
+            backgroundModel: AppSettings.backgroundModel,
             outputDirectory: outputDirectory
         )
     }

@@ -54,6 +54,14 @@ targets:
           else
             echo "warning: vendor/ffmpeg/bin missing; media conversion will not work"
           fi
+          MODELS="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Models"
+          mkdir -p "$MODELS"
+          if [ -d "$SRCROOT/vendor/birefnet/BiRefNetLite.mlmodelc" ]; then
+            rm -rf "$MODELS/BiRefNetLite.mlmodelc"
+            cp -R "$SRCROOT/vendor/birefnet/BiRefNetLite.mlmodelc" "$MODELS/"
+          else
+            echo "warning: vendor/birefnet missing (make bootstrap-model); background removal falls back to Vision"
+          fi
           LICENSES="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Licenses"
           mkdir -p "$LICENSES"
           cp -f "$SRCROOT/vendor/ffmpeg/COPYING.LGPLv2.1" "$LICENSES/" 2>/dev/null || true
