@@ -5,22 +5,17 @@ struct FidelityBadge: View {
     let level: FidelityLevel
 
     var body: some View {
-        Label(level.label, systemImage: symbol)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.12), in: Capsule())
+        Badge(text: level.label, systemImage: symbol, tone: tone)
             .help(level.explanation)
     }
 
-    private var color: Color {
+    private var tone: Theme.Tone {
         switch level {
-        case .lossless: .green
-        case .reencode: .orange
-        case .lossy: .red
-        case .extract: .blue
-        case .unsupported: .secondary
+        case .lossless: .success
+        case .reencode: .warning
+        case .lossy: .danger
+        case .extract: .info
+        case .unsupported: .neutral
         }
     }
 
@@ -51,11 +46,11 @@ struct StatusBadge: View {
             }
         case .completed:
             Label("Done", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(Theme.Palette.success)
         case .failed(let message):
             VStack(alignment: .leading, spacing: 1) {
                 Label("Failed", systemImage: "xmark.circle.fill")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Theme.Palette.danger)
                 reason(message)
             }
         case .skipped(let message):
@@ -69,7 +64,7 @@ struct StatusBadge: View {
 
     private func reason(_ message: String) -> some View {
         Text(message)
-            .font(.caption)
+            .font(Theme.Text.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .truncationMode(.tail)

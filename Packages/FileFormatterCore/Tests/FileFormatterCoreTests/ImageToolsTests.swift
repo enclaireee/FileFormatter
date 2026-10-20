@@ -121,6 +121,62 @@ struct ImageToolsTests {
         #expect(result.dataProvider?.data as Data? != vision.dataProvider?.data as Data?)
     }
 
+    @Test func rotateSwapsDimensions() throws {
+        let image = try makeImage(width: 120, height: 80, noisy: false)
+        let right = try ImageTools.apply(ImageEdit(rotation: 90), to: image)
+        #expect(right.width == 80 && right.height == 120)
+        let half = try ImageTools.apply(ImageEdit(rotation: 180), to: image)
+        #expect(half.width == 120 && half.height == 80)
+        let left = try ImageTools.apply(ImageEdit(rotation: 270), to: image)
+        #expect(left.width == 80 && left.height == 120)
+        #expect(try ImageTools.apply(ImageEdit(), to: image).width == 120)
+    }
+
+    @Test func cropKeepsRequestedAspectAndAnchor() throws {
+        let image = try makeImage(width: 120, height: 80, noisy: false)
+        let squareCenter = try ImageTools.apply(
+            ImageEdit(crop: ImageCrop(aspect: 1)),
+            to: image
+        )
+        #expect(squareCenter.width == 80 && squareCenter.height == 80)
+
+        let squareLeft = try ImageTools.apply(
+            ImageEdit(crop: ImageCrop(aspect: 1, anchorX: 0, anchorY: 0.5)),
+            to: image
+        )
+        #expect(squareLeft.width == 80 && squareLeft.height == 80)
+    }
+
+    @Test func flipMirrorsPixels() throws {
+        // Two pixels: red then blue.
+        let pixels: [UInt8] = [255, 0, 0, 255, 0, 0, 255, 255]
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let strip = try #require(CGImage(
+            width: 2, height: 1, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        ))
+
+        let flipped = try ImageTools.apply(ImageEdit(flip: .horizontal), to: strip)
+        #expect(flipped.width == 2 && flipped.height == 1)
+        let left = try pixelColor(flipped, x: 0, y: 0)
+        #expect(left.blue > 200 && left.red < 50)
+        let right = try pixelColor(flipped, x: 1, y: 0)
+        #expect(right.red > 200 && right.blue < 50)
+    }
+
+    private func pixelColor(_ image: CGImage, x: Int, y: Int) throws -> (red: Int, green: Int, blue: Int) {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let context = try #require(CGContext(
+            data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let corner = try #require(image.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)))
+        context.draw(corner, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return (Int(pixel[0]), Int(pixel[1]), Int(pixel[2]))
+    }
+
     @Test func removeBackgroundFallsBackToVisionWhenModelFails() throws {
         let photo = "/Library/User Pictures/Animals/Eagle.heic"
         guard FileManager.default.fileExists(atPath: photo) else {

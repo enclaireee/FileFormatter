@@ -24,6 +24,8 @@ final class AppModel {
         var detail: String?
         /// Set when the notice reports a run, so the banner can reveal, undo and retry.
         var summary: RunSummary?
+        /// True only when Retry Failed can act on the window queue, not on an unrelated tool run.
+        var retryable = false
     }
 
     var items: [ConversionItem] = []
@@ -114,6 +116,7 @@ final class AppModel {
     /// Why Convert is disabled, in words, or nil when it can run.
     var runBlockedReason: String? {
         if isRunning { return "A conversion is running." }
+        if isQuickRunning { return "A quick action is still running." }
         if isPlanning { return "Preparing the files…" }
         if items.isEmpty { return "Add files first." }
         if runnableCount == 0 {
@@ -269,7 +272,7 @@ final class AppModel {
         try? await journal.save(summary)
         if !tally.cancelled { NotificationService.shared.notify(summary) }
         lastSummary = summary
-        showResult(summary, stopped: tally.cancelled)
+        showResult(summary, stopped: tally.cancelled, retryable: summary.failed > 0)
         if !tally.cancelled { revealIfWanted(summary) }
     }
 
@@ -281,7 +284,7 @@ final class AppModel {
     }
 
     /// Reports a finished window or queue-header run in the banner.
-    func showResult(_ summary: RunSummary, stopped: Bool = false) {
+    func showResult(_ summary: RunSummary, stopped: Bool = false, retryable: Bool = false) {
         var parts: [String] = []
         if summary.converted > 0 {
             parts.append(summary.bytesSaved > 0
@@ -304,7 +307,8 @@ final class AppModel {
             tone: summary.failed > 0 || stopped || summary.converted == 0 ? .warning : .success,
             title: title,
             detail: parts.isEmpty ? nil : parts.joined(separator: " · "),
-            summary: summary
+            summary: summary,
+            retryable: retryable
         )
     }
 
@@ -347,6 +351,29 @@ final class AppModel {
         await quickRun(urls: urls, job: action.job(for: urls), showsProgress: showsProgress)
     }
 
+    /// Runs an Image Tools or PDF Tools job from the window and reports it in the usual banner.
+    @discardableResult
+    func runTool(urls: [URL], job: ConversionJob) async -> RunSummary? {
+        guard !isBusy else {
+            inform(.info, "Wait for the current run to finish", "Then run the tool again.")
+            return nil
+        }
+        guard !urls.isEmpty else {
+            inform(.warning, "Choose files first", "Add images or PDFs to the tool.")
+            return nil
+        }
+        isQuickRunning = true
+        defer { isQuickRunning = false }
+        guard let summary = await performQuickRun(urls: urls, job: job, showsProgress: false) else {
+            inform(.warning, "Couldn't run this tool", "The files may be unreadable or in an unsupported format.")
+            return nil
+        }
+        lastSummary = summary
+        showResult(summary)
+        if !summary.undone { revealIfWanted(summary) }
+        return summary
+    }
+
     private func performQuickRun(urls: [URL], job: ConversionJob, showsProgress: Bool) async -> RunSummary? {
         let expanded = await Self.expand(urls)
         guard !expanded.isEmpty else { return nil }
@@ -358,12 +385,22 @@ final class AppModel {
 
         let plan: PlanResult
         do {
-            plan = try await service.makePlan(
-                urls: expanded,
-                targets: job.targets,
-                suffix: job.suffix,
-                pdfMode: job.pdfMode
-            )
+            plan = if job.isTool {
+                try await service.makeToolPlan(
+                    urls: expanded,
+                    imageEdit: job.imageEdit,
+                    pdfTool: job.pdfTool,
+                    suffix: job.suffix
+                )
+            } else {
+                try await service.makePlan(
+                    urls: expanded,
+                    targets: job.targets,
+                    suffix: job.suffix,
+                    pdfMode: job.pdfMode,
+                    pdfTool: job.pdfTool
+                )
+            }
         } catch {
             if showsProgress { present(error: error) }
             return nil
@@ -644,6 +681,10 @@ final class AppModel {
         guard let preset = Preset.builtIn.first(where: { $0.id == rule.presetID }) else { return }
         // Watched conversions are silent by design; results and failures land in History.
         await quickRun(urls: [url], job: preset.job, showsProgress: false)
+        if let index = watchRules.firstIndex(where: { $0.id == rule.id }) {
+            watchRules[index].lastEvent = .now
+            saveWatchRules()
+        }
     }
 
     private static func loadWatchRules() -> [WatchRule] {

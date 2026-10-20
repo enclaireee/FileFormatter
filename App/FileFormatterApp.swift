@@ -21,7 +21,7 @@ struct FileFormatterApp: App {
             ContentView(model: model)
                 .frame(minWidth: 900, minHeight: 600)
         }
-        .defaultSize(width: 1_100, height: 720)
+        .defaultSize(width: 1_200, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Add Files or Folders…") {

@@ -120,72 +120,47 @@ struct WatchFoldersView: View {
     @Bindable var model: AppModel
     @State private var showImporter = false
 
+    private var activeCount: Int {
+        model.watchRules.filter(\.isEnabled).count
+    }
+
+    private var subtitle: String {
+        guard !model.watchRules.isEmpty else {
+            return "Convert new files automatically while FileFormatter is open."
+        }
+        return "\(model.watchRules.count) rule\(model.watchRules.count == 1 ? "" : "s") · \(activeCount) active · New files convert on arrival."
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            PageHeader("Watch Folders", subtitle: subtitle) {
+                Button("Add Folder…") {
+                    showImporter = true
+                }
+            }
+
             if model.watchRules.isEmpty {
-                ContentUnavailableView(
-                    "No watched folders",
+                EmptyStatePanel(
                     systemImage: "folder.badge.gearshape",
-                    description: Text("Add a folder and choose a preset. New files are converted automatically while FileFormatter is open.")
-                )
+                    title: "No watched folders",
+                    message: "Choose a folder and a preset. New files are converted automatically while FileFormatter is open."
+                ) {
+                    Button("Choose Folder…") {
+                        showImporter = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             } else {
                 List {
                     ForEach($model.watchRules) { $rule in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Toggle(rule.name, isOn: Binding(
-                                    get: { rule.isEnabled },
-                                    set: { value in
-                                        rule.isEnabled = value
-                                        model.updateWatch(rule)
-                                    }
-                                ))
-                                Spacer()
-                                Button("Reveal") {
-                                    NSWorkspace.shared.activateFileViewerSelecting([
-                                        URL(fileURLWithPath: rule.folderPath)
-                                    ])
-                                }
-                                .controlSize(.small)
-                                Button(role: .destructive) {
-                                    model.removeWatch(rule)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.borderless)
-                            }
-                            Text(rule.folderPath)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            HStack {
-                                Text("Preset")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Picker("", selection: Binding(
-                                    get: { rule.presetID },
-                                    set: { value in
-                                        rule.presetID = value
-                                        model.updateWatch(rule)
-                                    }
-                                )) {
-                                    ForEach(Preset.builtIn) { preset in
-                                        Text(preset.name).tag(preset.id)
-                                    }
-                                }
-                                .labelsHidden()
-                                .controlSize(.small)
-                            }
-                        }
-                        .padding(.vertical, 4)
+                        ruleRow($rule)
+                            .padding(.vertical, 5)
                     }
                 }
                 .listStyle(.inset)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.folder],
@@ -197,21 +172,109 @@ struct WatchFoldersView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Watch Folders")
-                    .font(.headline)
-                Text("Convert new files automatically while the app is open.")
-                    .font(.caption)
+    private func ruleRow(_ rule: Binding<WatchRule>) -> some View {
+        let value = rule.wrappedValue
+        let exists = FileManager.default.fileExists(atPath: value.folderPath)
+
+        return HStack(alignment: .top, spacing: Theme.Space.md) {
+            IconTile(
+                systemImage: "folder",
+                tone: value.isEnabled ? .accent : .neutral,
+                size: 34
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: Theme.Space.sm) {
+                    Toggle("", isOn: Binding(
+                        get: { rule.wrappedValue.isEnabled },
+                        set: { on in update(rule) { $0.isEnabled = on } }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityLabel("Watch \(value.name)")
+
+                    Text(value.name)
+                        .font(.headline)
+                        .lineLimit(1)
+
+                    Badge(
+                        text: value.isEnabled ? "Active" : "Paused",
+                        systemImage: value.isEnabled ? "bolt.fill" : "pause.fill",
+                        tone: value.isEnabled ? .success : .neutral
+                    )
+
+                    if !exists {
+                        Badge(text: "Folder missing", systemImage: "exclamationmark.triangle.fill", tone: .warning)
+                    }
+
+                    Spacer(minLength: Theme.Space.sm)
+
+                    Menu {
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([
+                                URL(fileURLWithPath: value.folderPath)
+                            ])
+                        }
+                        .disabled(!exists)
+
+                        Divider()
+
+                        Button("Remove Watched Folder", role: .destructive) {
+                            model.removeWatch(value)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("More actions")
+                }
+
+                Text(value.folderPath)
+                    .font(Theme.Text.caption)
                     .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button("Add Folder…") {
-                showImporter = true
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(value.folderPath)
+
+                HStack(spacing: Theme.Space.sm) {
+                    Text("Preset")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(.secondary)
+
+                    Picker("", selection: Binding(
+                        get: { rule.wrappedValue.presetID },
+                        set: { id in update(rule) { $0.presetID = id } }
+                    )) {
+                        ForEach(Preset.builtIn) { preset in
+                            Text(preset.name).tag(preset.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(maxWidth: 240)
+
+                    Spacer(minLength: Theme.Space.sm)
+
+                    if let lastEvent = value.lastEvent {
+                        Text("Last run \(lastEvent.formatted(.relative(presentation: .named)))")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .opacity(value.isEnabled ? 1 : 0.62)
+        .animation(.default, value: value.isEnabled)
+    }
+
+    private func update(_ rule: Binding<WatchRule>, _ change: (inout WatchRule) -> Void) {
+        var value = rule.wrappedValue
+        change(&value)
+        rule.wrappedValue = value
+        model.updateWatch(value)
     }
 }

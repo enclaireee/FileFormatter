@@ -38,7 +38,10 @@ struct CompressSettings: Equatable {
         }
     }
 
-    var targetBytes: UInt64 { UInt64(max(targetMB, 0.1) * 1_000_000) }
+    var targetBytes: UInt64 {
+        let megabytes = targetMB.isFinite ? max(targetMB, 0.1) : 0.1
+        return UInt64(megabytes * 1_000_000)
+    }
 
     /// Index into the Light/Balanced/Strong tables; nil for Target size.
     private var level: Int? {
@@ -215,7 +218,7 @@ struct CompressPanel: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(settings.strength == .target && settings.targetMB <= 0)
+                .disabled(settings.strength == .target && (!settings.targetMB.isFinite || settings.targetMB <= 0))
             }
         }
         .task(id: settings) {

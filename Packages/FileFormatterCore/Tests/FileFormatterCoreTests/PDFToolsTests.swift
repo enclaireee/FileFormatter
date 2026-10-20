@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
 import ImageIO
 import PDFKit
@@ -120,6 +121,176 @@ struct PDFToolsTests {
         } catch ConversionError.notSmaller {
             #expect(!FileManager.default.fileExists(atPath: out.path))
         }
+    }
+
+    private func makeTextPDF(at url: URL, text: String) {
+        var box = CGRect(x: 0, y: 0, width: 300, height: 400)
+        let ctx = CGContext(url as CFURL, mediaBox: &box, nil)!
+        ctx.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 18, nil)
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: text, attributes: [.font: font])
+        )
+        ctx.textPosition = CGPoint(x: 24, y: 300)
+        CTLineDraw(line, ctx)
+        ctx.endPDFPage()
+        ctx.closePDF()
+    }
+
+    @Test func rotatesPagesLosslessly() throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let src = d.appendingPathComponent("r.pdf"), out = d.appendingPathComponent("r-out.pdf")
+        makePDF(at: src, pages: 2)
+        var request = PDFToolRequest(kind: .rotate)
+        request.rotation = 90
+        try PDFTools.apply(request, source: src, destination: out)
+        let doc = try #require(PDFDocument(url: out))
+        #expect(doc.pageCount == 2)
+        #expect(doc.page(at: 0)?.rotation == 90)
+        #expect(doc.page(at: 1)?.rotation == 90)
+    }
+
+    @Test func organizesAndRemovesPages() throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let src = d.appendingPathComponent("o.pdf"), out = d.appendingPathComponent("o-out.pdf")
+        makePDF(at: src, pages: 4)
+        var request = PDFToolRequest(kind: .organize)
+        request.pageOrder = [4, 2]
+        request.deletePages = [1]
+        try PDFTools.apply(request, source: src, destination: out)
+        let doc = try #require(PDFDocument(url: out))
+        #expect(doc.pageCount == 2)
+
+        var invalid = PDFToolRequest(kind: .organize)
+        invalid.pageOrder = [5]
+        #expect(throws: ConversionError.self) {
+            try PDFTools.apply(invalid, source: src, destination: d.appendingPathComponent("bad.pdf"))
+        }
+    }
+
+    @Test func changesPageSize() throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let src = d.appendingPathComponent("s.pdf"), out = d.appendingPathComponent("s-a4.pdf")
+        makePDF(at: src, pages: 2)
+        var request = PDFToolRequest(kind: .pageSize)
+        request.pageSize = .a4
+        try PDFTools.apply(request, source: src, destination: out)
+        let doc = try #require(PDFDocument(url: out))
+        let size = try #require(doc.page(at: 0)).bounds(for: .mediaBox).size
+        #expect(abs(size.width - PDFPageSize.a4.size.width) < 1)
+        #expect(abs(size.height - PDFPageSize.a4.size.height) < 1)
+        #expect(doc.pageCount == 2)
+    }
+
+    @Test func extractsTextAsMarkdown() throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let src = d.appendingPathComponent("t.pdf"), out = d.appendingPathComponent("t.md")
+        makeTextPDF(at: src, text: "Hello FileFormatter")
+        var request = PDFToolRequest(kind: .text)
+        request.textTarget = .markdown
+        try PDFTools.apply(request, source: src, destination: out)
+        let text = try String(contentsOf: out, encoding: .utf8)
+        #expect(text.contains("Hello FileFormatter"))
+    }
+
+    @Test func protectsAndUnlocks() throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let src = d.appendingPathComponent("p.pdf")
+        let locked = d.appendingPathComponent("locked.pdf")
+        let opened = d.appendingPathComponent("opened.pdf")
+        makePDF(at: src, pages: 2)
+
+        var protect = PDFToolRequest(kind: .protect)
+        protect.password = "secret"
+        try PDFTools.apply(protect, source: src, destination: locked)
+        #expect(PDFDocument(url: locked)?.isLocked == true)
+
+        var unlock = PDFToolRequest(kind: .unlock)
+        unlock.password = "secret"
+        try PDFTools.apply(unlock, source: locked, destination: opened)
+        let doc = try #require(PDFDocument(url: opened))
+        #expect(!doc.isLocked)
+        #expect(doc.pageCount == 2)
+
+        var wrong = PDFToolRequest(kind: .unlock)
+        wrong.password = "nope"
+        #expect(throws: ConversionError.self) {
+            try PDFTools.apply(wrong, source: locked, destination: d.appendingPathComponent("no.pdf"))
+        }
+    }
+
+    @Test func toolPlanKeepsImageFormatAndNamesPDFs() async throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let png = d.appendingPathComponent("photo.png")
+        let pdf = d.appendingPathComponent("doc.pdf")
+        makePNG(at: png, width: 60, height: 40, noisy: false)
+        makePDF(at: pdf, pages: 2)
+        let service = ConversionService()
+
+        let images = try await service.makeToolPlan(
+            urls: [png],
+            imageEdit: ImageEdit(rotation: 90),
+            pdfTool: nil,
+            suffix: "-rotated"
+        )
+        let image = try #require(images.items.first)
+        #expect(image.outputName == "photo-rotated.png")
+        #expect(image.target == .png)
+        #expect(image.fidelity == .lossless)
+
+        let converted = try await service.convert(image, options: ConversionOptions(
+            target: .png, quality: 0.9, suffix: "-rotated", preserveMetadata: true,
+            imageEdit: ImageEdit(rotation: 90)
+        ))
+        let source = try #require(CGImageSourceCreateWithURL(converted.url as CFURL, nil))
+        let output = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(output.width == 40 && output.height == 60)
+
+        var rotate = PDFToolRequest(kind: .rotate)
+        rotate.rotation = 180
+        let pdfs = try await service.makeToolPlan(
+            urls: [pdf],
+            imageEdit: nil,
+            pdfTool: rotate,
+            suffix: "-rotated"
+        )
+        let item = try #require(pdfs.items.first)
+        #expect(item.outputName == "doc-rotated.pdf")
+        #expect(item.pdfMode == .tool)
+    }
+
+    @Test func serviceRunsPDFToolsAndText() async throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let pdf = d.appendingPathComponent("tool.pdf")
+        makePDF(at: pdf, pages: 2)
+        let service = ConversionService()
+
+        var rotate = PDFToolRequest(kind: .rotate)
+        rotate.rotation = 90
+        let plan = try await service.makeToolPlan(
+            urls: [pdf], imageEdit: nil, pdfTool: rotate, suffix: "-rotated"
+        )
+        let item = try #require(plan.items.first)
+        let result = try await service.convert(item, options: ConversionOptions(
+            target: .pdf, quality: 0.9, suffix: "-rotated",
+            preserveMetadata: true, pdfTool: rotate
+        ))
+        #expect(PDFDocument(url: result.url)?.page(at: 0)?.rotation == 90)
+
+        let textURL = d.appendingPathComponent("words.pdf")
+        makeTextPDF(at: textURL, text: "Toolkit text")
+        var text = PDFToolRequest(kind: .text)
+        text.textTarget = .markdown
+        let textPlan = try await service.makeToolPlan(
+            urls: [textURL], imageEdit: nil, pdfTool: text, suffix: "-text"
+        )
+        let textItem = try #require(textPlan.items.first)
+        let textResult = try await service.convert(textItem, options: ConversionOptions(
+            target: .markdown, quality: 0.9, suffix: "-text",
+            preserveMetadata: true, pdfTool: text
+        ))
+        #expect(textItem.pdfMode == .text)
+        #expect(try String(contentsOf: textResult.url, encoding: .utf8).contains("Toolkit text"))
     }
 
     @Test func servicePlansMergeSplitAndCompress() async throws {

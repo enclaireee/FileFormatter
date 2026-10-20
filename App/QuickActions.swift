@@ -16,12 +16,20 @@ struct ConversionJob: Sendable {
     /// Video/audio goal as a share of each file's size (Compress Light/Balanced/Strong).
     var mediaTargetRatio: Double?
     var removeBackground = false
+    /// Set for toolkit runs; one edit applies to every image in the batch.
+    var imageEdit: ImageEdit?
+    /// Set for toolkit runs; one operation applies to every PDF in the batch.
+    var pdfTool: PDFToolRequest?
     /// Set per run from Settings; nil writes next to the source.
     var outputDirectory: URL?
 
+    var isTool: Bool { imageEdit != nil || pdfTool != nil }
+
     func target(for item: ConversionItem) -> ConversionTarget? {
+        if let target = item.target { return target }
         if item.kind == .pdf {
             if item.pdfMode == .searchable { return .searchablePDF }
+            if item.pdfMode == .text { return pdfTool?.textTarget ?? .markdown }
             if item.pdfMode != .pages { return .pdf }
             return targets.image.family == .image ? targets.image : nil
         }
@@ -43,6 +51,8 @@ struct ConversionJob: Sendable {
             targetBytes: goal.flatMap { item.byteSize > $0 ? $0 : nil },
             removeBackground: item.kind == .image && removeBackground,
             backgroundModel: AppSettings.backgroundModel,
+            imageEdit: item.kind == .image ? imageEdit : nil,
+            pdfTool: item.kind == .pdf ? pdfTool : nil,
             outputDirectory: outputDirectory
         )
     }

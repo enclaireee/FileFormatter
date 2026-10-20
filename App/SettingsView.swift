@@ -18,7 +18,6 @@ struct SettingsView: View {
     @AppStorage(AppSettings.hotkeyEnabled) private var hotkeyEnabled = true
     @AppStorage(AppSettings.hotkeyLabel) private var hotkeyLabel = "⌥⌘F"
     @State private var recorder: Any?
-    @State private var hotkeyFailed = false
     @State private var opensAtLogin = AppSettings.opensAtLogin
     @Bindable private var updater = Updater.shared
     @State private var loginError: String?
@@ -31,6 +30,27 @@ struct SettingsView: View {
     private var folder: URL? { _ = bookmark; return AppSettings.bookmarkedFolder() }
 
     var body: some View {
+        TabView {
+            general
+                .tabItem { Label("General", systemImage: "gearshape") }
+            conversion
+                .tabItem { Label("Conversion", systemImage: "slider.horizontal.3") }
+            menuBar
+                .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
+            about
+                .tabItem { Label("About", systemImage: "info.circle") }
+        }
+        .frame(width: 520, height: 480)
+        .onAppear {
+            NSApp.activate()
+            opensAtLogin = AppSettings.opensAtLogin
+        }
+        .onDisappear { stopRecording() }
+    }
+
+    // MARK: General
+
+    private var general: some View {
         Form {
             Section("Output") {
                 Picker("Save to", selection: $useFolder) {
@@ -64,22 +84,22 @@ struct SettingsView: View {
                 Toggle("Show results in Finder when done", isOn: $revealWhenDone)
                 Text("Applies to the window, menu bar and Finder Quick Actions. Watch folders never open Finder.")
                     .font(.caption).foregroundStyle(.secondary)
-                Toggle("Keep metadata (camera, location, dates)", isOn: $keepMetadata)
+            }
+
+            Section("Metadata") {
+                Toggle("Keep camera, location and dates", isOn: $keepMetadata)
                 Text("Compress always strips metadata to save space. The main window has its own switch.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section {
-                suffixField("Converted", text: $convertSuffix, example: "photo.png → photo\(convertSuffix).jpg")
-                suffixField("Compressed", text: $compressSuffix, example: "photo\(compressSuffix).jpg")
-                suffixField("Background removed", text: $backgroundSuffix, example: "photo\(backgroundSuffix).png")
-            } header: {
-                Text("File name endings")
-            } footer: {
-                Text("If a file with that name exists, a number is added instead of replacing it.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        }
+        .formStyle(.grouped)
+    }
 
+    // MARK: Conversion
+
+    private var conversion: some View {
+        Form {
             Section("Background removal") {
                 Toggle("HD edges (slower)", isOn: $hdBackground)
                     .disabled(AppSettings.bundledBackgroundModel == nil)
@@ -107,6 +127,24 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section {
+                suffixField("Converted", text: $convertSuffix, example: "photo.png → photo\(convertSuffix).jpg")
+                suffixField("Compressed", text: $compressSuffix, example: "photo\(compressSuffix).jpg")
+                suffixField("Background removed", text: $backgroundSuffix, example: "photo\(backgroundSuffix).png")
+            } header: {
+                Text("File name endings")
+            } footer: {
+                Text("If a file with that name exists, a number is added instead of replacing it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: Menu bar
+
+    private var menuBar: some View {
+        Form {
             Section("Menu bar") {
                 Toggle("Show drop pad while dragging files", isOn: $shelfEnabled)
                 Toggle("Open popover with keyboard shortcut", isOn: $hotkeyEnabled)
@@ -139,6 +177,56 @@ struct SettingsView: View {
                 }
             }
 
+            Section {
+                Text("Drag files onto the menu bar icon or the floating drop pad to convert without opening the window.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: About
+
+    private var about: some View {
+        Form {
+            Section {
+                HStack(spacing: Theme.Space.md) {
+                    if let icon = NSApp.applicationIconImage {
+                        Image(nsImage: icon)
+                            .resizable()
+                            .frame(width: 52, height: 52)
+                            .accessibilityHidden(true)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("FileFormatter")
+                            .font(Theme.Text.panelTitle)
+                        Text("Version \(version)")
+                            .font(Theme.Text.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        Text("Local conversions for macOS")
+                            .font(Theme.Text.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: Theme.Space.sm)
+
+                    Button("Licenses…") {
+                        if let url = Bundle.main.resourceURL?.appendingPathComponent("Licenses") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .help("Open-source notices, including FFmpeg (LGPL)")
+                }
+
+                Label(
+                    "Your files never leave this Mac, and originals are never deleted. The only network use is checking for updates.",
+                    systemImage: "lock.shield"
+                )
+                .font(Theme.Text.body)
+            }
+
             Section("Updates") {
                 Toggle("Check for updates automatically", isOn: $updater.checksAutomatically)
                 Toggle("Download and install automatically", isOn: $updater.installsAutomatically)
@@ -155,20 +243,7 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("About") {
-                LabeledContent("Version") {
-                    HStack {
-                        Text(version)
-                        Button("Licenses…") {
-                            if let url = Bundle.main.resourceURL?.appendingPathComponent("Licenses") {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                        .help("Open-source notices, including FFmpeg (LGPL)")
-                    }
-                }
-                Label("Your files never leave this Mac, and originals are never deleted. The only network use is checking for updates.", systemImage: "lock.shield")
-                    .font(.callout)
+            Section {
                 HStack {
                     Text("Finder Quick Actions may need enabling first.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -182,19 +257,10 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480)
-        .fixedSize(horizontal: false, vertical: true)
-        .onAppear {
-            NSApp.activate()
-            opensAtLogin = AppSettings.opensAtLogin
-            hotkeyFailed = HotKey.shared.failed
-        }
-        .onDisappear { stopRecording() }
     }
 
     private func applyHotkey() {
         HotKey.shared.apply()
-        hotkeyFailed = HotKey.shared.failed
     }
 
     private func stopRecording() {

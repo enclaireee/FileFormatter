@@ -2,7 +2,7 @@
 
 A native, local-only batch file converter for macOS 26+ on Apple silicon.
 
-**Status: 0.6.0 — instant convert.** Press ⌥⌘F (changeable in Settings), drop files on the menu bar icon or right-click them in Finder and pick an action; the result lands next to the original. The full window still handles big mixed batches. The app converts images, PDFs, Office documents, data, audio, and video; removes image backgrounds; compresses images, PDFs, and video; merges and splits PDFs; batch renames; runs OCR; watches folders; and finds duplicates. `make release` produces an ad-hoc signed DMG; it is not notarized, so the first launch needs right-click → Open.
+**Status: 0.8.0 — instant convert and tools.** Press ⌥⌘F (changeable in Settings), drop files on the menu bar icon or right-click them in Finder and pick an action; the result lands next to the original. The full window still handles big mixed batches. The app converts images, PDFs, Office documents, data, audio, and video; rotates, crops, and flips images; rotates, organizes, resizes, stamps, protects, and unlocks PDFs; extracts PDF text; removes image backgrounds; compresses images, PDFs, and video; merges and splits PDFs; batch renames; runs OCR; watches folders; and finds duplicates. `make release` produces an ad-hoc signed DMG; it is not notarized, so the first launch needs right-click → Open.
 
 ## What works now
 
@@ -11,6 +11,8 @@ A native, local-only batch file converter for macOS 26+ on Apple silicon.
 - Background removal with Apple Vision (subject lift), transparent PNG/WebP/HEIC output.
 - Image resize (longest side) and compress to a target file size.
 - PDF merge (PDFs and images into one file), split into pages, and compress (Quartz "Reduce File Size").
+- PDF Tools (toolbar → Tools): rotate 90/180/270°, reorder or remove pages, change page size (A4/Letter/Legal), add page numbers and a diagonal watermark, password-protect, unlock, and extract text as Markdown, plain text, or HTML.
+- Image Tools (toolbar → Tools): batch rotate left/right/180°, flip horizontally/vertically, and crop to Square, 4:5, 9:16, 16:9, 3:2, or a custom ratio with a nine-position anchor. Images keep their original format; animated GIFs are skipped.
 - Video → GIF (palette-optimised), extract audio, and compress to 10/25/50/100 MB for sharing.
 - Batch rename with `{name} {n} {n:3} {date} {ext}` tokens, live preview, collision checks, and Undo.
 - Stop a running conversion (`⌘.`); unfinished items stay in the queue.
@@ -118,6 +120,7 @@ The sidebar ships with outcome-based presets: Web Images, Archive Photos, Images
 ## PDF, Office, and media limits
 
 - PDF pages are rendered at 2× page size, one output file per page, or OCR'd into one searchable PDF. Compress keeps the original and reports it when the result would not be smaller.
+- PDF Tools write new files next to the source: rotation is lossless metadata, while page-size changes and stamps redraw pages (text stays selectable). Text extraction reads the existing text layer; OCR first for scans.
 - DOCX/PPTX keep structure (headings, emphasis, lists, tables, images) but not layout, fonts, charts, or shapes.
 - XLSX → CSV/TSV uses the first non-empty sheet; multi-sheet JSON keys are alphabetical. Formulas are not authored.
 - Video re-encodes rather than remuxing; H.264 hardware encode and VP9/Opus WebM are supported. Subtitle tracks are copied where the container allows.
@@ -125,7 +128,7 @@ The sidebar ships with outcome-based presets: Web Images, Archive Photos, Images
 
 ## Privacy
 
-No telemetry, no uploads. Everything is processed locally; the only network request is the update check, which can be turned off in Settings → Updates. Generated files are the only writes; replaced files are never silently destroyed. **Undo Run** moves generated files to the Trash.
+No telemetry, no uploads. Everything is processed locally; the only network request is the update check, which can be turned off in Settings → About → Updates. Generated files are the only writes; replaced files are never silently destroyed. **Undo Run** moves generated files to the Trash.
 
 ## License
 

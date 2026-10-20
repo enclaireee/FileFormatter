@@ -4,13 +4,20 @@ import SwiftUI
 struct InspectorView: View {
     @Bindable var model: AppModel
     @AppStorage(AppSettings.hdBackground) private var hdBackground = true
+    @State private var showMoreImageOptions = false
 
     @Environment(\.openSettings) private var openSettings
 
     private var usesQuality: Bool {
         (model.hasKind(.image) && model.imageTarget.supportsQuality)
+            || (model.hasKind(.pdf) && model.pdfMode == .compress)
+            || (model.hasKind(.pdf) && model.pdfMode == .pages && model.imageTarget.supportsQuality)
             || (model.hasKind(.audio) && model.audioTarget.supportsQuality)
-            || model.hasKind(.video)
+            || (model.hasKind(.video) && model.videoTarget.supportsQuality)
+    }
+
+    private var hasCustomImageOptions: Bool {
+        model.maxPixelSize != nil || model.imageTargetBytes != nil || !model.preserveMetadata
     }
 
     private var presetBinding: Binding<String> {
@@ -24,19 +31,42 @@ struct InspectorView: View {
         )
     }
 
-    private func percentLabel(_ title: String) -> some View {
-        LabeledContent(title) {
-            Text("\(Int(model.quality * 100))%").monospacedDigit()
+    var body: some View {
+        Group {
+            if model.isEmpty {
+                empty
+            } else {
+                form
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.Palette.canvas)
+    }
+
+    private var empty: some View {
+        EmptyStatePanel(
+            systemImage: "slider.horizontal.3",
+            title: "Settings",
+            message: "Add files to choose formats, quality, and where the results go. You can also start from a preset."
+        ) {
+            Button("Add Files…") {
+                model.showImporter = true
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 
-    private func caption(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary)
-    }
-
-    var body: some View {
+    private var form: some View {
         Form {
-            Section("Preset") {
+            if model.isRunning {
+                Section {
+                    Label("Settings are locked while files are converting.", systemImage: "lock.fill")
+                        .font(Theme.Text.body)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
                 Picker("Preset", selection: presetBinding) {
                     Text("Custom").tag("custom")
                     Divider()
@@ -44,123 +74,66 @@ struct InspectorView: View {
                         Label(preset.name, systemImage: preset.systemImage).tag(preset.id)
                     }
                 }
-                caption("Sets formats and quality for every file type.")
-            }
-
-            if model.isEmpty {
-                Section {
-                    caption("Add files to see their options.")
-                }
+            } header: {
+                Label("Recipe", systemImage: "wand.and.stars")
+            } footer: {
+                note("Sets the formats and quality for every kind of file in the queue.")
             }
 
             if model.hasKind(.image) || model.hasKind(.pdf) {
-                Section(model.hasKind(.pdf) ? "Images and PDFs" : "Images") {
-                    Picker("Convert to", selection: imageBinding) {
-                        ForEach(ConversionTarget.imageTargets) { target in
-                            Text(target.displayName).tag(target)
-                        }
-                    }
-                    if model.imageTarget == .pdf {
-                        caption("Each image becomes a one-page PDF. Pages keep the source pixel dimensions.")
-                    } else if !model.imageTarget.supportsQuality {
-                        caption("Lossless output. Quality does not apply.")
-                    }
-                    Toggle("Keep photo info (location, camera)", isOn: $model.preserveMetadata)
-
-                    Picker("Resize", selection: $model.maxPixelSize) {
-                        Text("Original").tag(Int?.none)
-                        ForEach([3840, 2560, 1920, 1280, 800], id: \.self) { px in
-                            Text("\(px) px").tag(Int?.some(px))
-                        }
-                    }
-                    if model.imageTarget.supportsQuality {
-                        Picker("Target file size", selection: $model.imageTargetBytes) {
-                            Text("None").tag(UInt64?.none)
-                            Text("5 MB").tag(UInt64?.some(5_000_000))
-                            Text("2 MB").tag(UInt64?.some(2_000_000))
-                            Text("1 MB").tag(UInt64?.some(1_000_000))
-                            Text("500 KB").tag(UInt64?.some(500_000))
-                        }
-                    }
-
-                    Toggle("Remove background", isOn: $model.removeBackground)
-                    caption(!hdBackground || AppSettings.bundledBackgroundModel == nil
-                            ? "Cuts out the main subject with Apple Vision. Fails for files with no clear subject."
-                            : "Cuts out the subject with the HD model. Change it in Settings. Fails for files with no clear subject.")
-                    if model.removeBackground && model.imageTarget == .jpeg {
-                        HStack {
-                            Label("JPEG can't keep the transparent background.", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Use PNG") {
-                                model.imageTarget = .png
-                                model.scheduleReplan()
-                            }
-                        }
-                    }
-
-                    if model.hasKind(.pdf) {
-                        Picker("PDF pages become", selection: $model.pdfMode) {
-                            ForEach(PDFMode.allCases) { Text($0.label).tag($0) }
-                        }
-                        caption(model.pdfMode != .pages
-                                ? "\(model.pdfMode.label). The image format is ignored for PDFs."
-                                : (model.imageTarget.family == .image
-                                   ? "PDF pages are saved in this image format."
-                                   : "Choose an image format to extract PDF pages."))
-                        if model.pdfMode == .pages && model.imageTarget.family != .image {
-                            Button("Use PNG for Pages") {
-                                model.imageTarget = .png
-                                model.scheduleReplan()
-                            }
-                        }
-                    }
-                }
-            }
-
-            if model.hasKind(.data) {
-                Section("Data") {
-                    Picker("Convert to", selection: dataBinding) {
-                        ForEach(ConversionTarget.dataTargets) { target in
-                            Text(target.displayName).tag(target)
-                        }
-                    }
-                    caption("CSV and TSV are read as a table with a header row. JSON output is an array of objects; JSON to CSV requires the same shape.")
-                }
+                mediaSection
             }
 
             if model.hasKind(.document) {
-                Section("Documents") {
-                    Picker("Convert to", selection: documentBinding) {
+                Section {
+                    Picker("Documents become", selection: documentBinding) {
                         ForEach(ConversionTarget.documentTargets) { target in
                             Text(target.displayName).tag(target)
                         }
                     }
-                    caption("DOCX and PPTX keep headings, bold/italic, lists, tables, and images (images go to a <name>_files folder). Plain text stays text-only. Shapes and charts are not preserved.")
+                } header: {
+                    Label("Documents", systemImage: "doc.text")
+                } footer: {
+                    note("Headings, lists, tables and images are kept. Shapes and charts are not.")
+                }
+            }
+
+            if model.hasKind(.data) {
+                Section {
+                    Picker("Data becomes", selection: dataBinding) {
+                        ForEach(ConversionTarget.dataTargets) { target in
+                            Text(target.displayName).tag(target)
+                        }
+                    }
+                } header: {
+                    Label("Data", systemImage: "tablecells")
+                } footer: {
+                    note("CSV and TSV use the first row as column names. JSON output is a list of objects.")
                 }
             }
 
             if model.hasKind(.audio) {
-                Section("Audio") {
-                    Picker("Convert to", selection: audioBinding) {
+                Section {
+                    Picker("Audio becomes", selection: audioBinding) {
                         ForEach(ConversionTarget.audioTargets) { target in
                             Text(target.displayName).tag(target)
                         }
                     }
-                    caption("Audio tracks and metadata are written with FFmpeg. Lossless targets are FLAC, WAV, and AIFF.")
+                } header: {
+                    Label("Audio", systemImage: "waveform")
+                } footer: {
+                    note("MP3, M4A, Opus and OGG are lossy. FLAC, WAV and AIFF keep the original samples.")
                 }
             }
 
             if model.hasKind(.video) {
-                Section("Video") {
-                    Picker("Convert to", selection: videoBinding) {
+                Section {
+                    Picker("Video becomes", selection: videoBinding) {
                         ForEach(ConversionTarget.videoTargets) { target in
                             Text(target.displayName).tag(target)
                         }
-                        if !ConversionTarget.videoTargets.contains(.gif) {
-                            Text(ConversionTarget.gif.displayName).tag(ConversionTarget.gif)
-                        }
+                        Divider()
+                        Text(ConversionTarget.gif.displayName).tag(ConversionTarget.gif)
                         Divider()
                         Section("Audio only") {
                             ForEach(ConversionTarget.audioTargets) { target in
@@ -176,50 +149,203 @@ struct InspectorView: View {
                             }
                         }
                     }
-                    caption("H.264 uses the hardware encoder. WebM uses VP9/Opus. Subtitles are copied where the container supports them.")
+                } header: {
+                    Label("Video", systemImage: "film")
+                } footer: {
+                    note("H.264 uses the hardware encoder. WebM uses VP9. Subtitles are kept when the format allows.")
                 }
             }
 
             if !unsupportedKinds.isEmpty {
-                Section("Other files") {
-                    caption("Not convertible yet: \(unsupportedKinds.joined(separator: ", ")). They stay in the queue as skipped.")
+                Section {
+                    Label(
+                        "Not convertible yet: \(unsupportedKinds.joined(separator: ", ")). They stay in the queue as skipped.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(Theme.Palette.warning)
+                } header: {
+                    Label("Other files", systemImage: "questionmark.folder")
                 }
             }
 
             if usesQuality {
-                Section("Quality") {
-                    percentLabel("Quality")
-                    Slider(value: $model.quality, in: 0.3...1.0)
+                Section {
+                    HStack(spacing: Theme.Space.sm) {
+                        Slider(value: $model.quality, in: 0.3...1.0)
+                        Text("\(Int(model.quality * 100))%")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .trailing)
+                    }
+                } header: {
+                    Label("Quality", systemImage: "slider.horizontal.3")
+                } footer: {
+                    note("Used by formats that support it. Lossless formats ignore this.")
                 }
             }
 
-            Section("Output") {
-                LabeledContent("Saved") {
-                    HStack {
+            Section {
+                LabeledContent("Save to") {
+                    HStack(spacing: Theme.Space.sm) {
                         Text(model.destinationDescription)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                         Button("Change…") { openSettings() }
+                            .controlSize(.small)
                     }
                 }
+
                 TextField("Add to name", text: $model.suffix)
                     .onSubmit { model.scheduleReplan() }
+
                 if let example = model.outputExample {
-                    caption("Example: \(example)")
+                    note("Example: \(example)")
                 }
+            } header: {
+                Label("Output", systemImage: "folder")
+            } footer: {
+                note("Originals are never changed. A number is added if the name is already taken.")
             }
         }
         .formStyle(.grouped)
         .disabled(model.isRunning)
-        .onChange(of: model.suffix) { _, _ in
-            model.scheduleReplan()
+        .onAppear {
+            if hasCustomImageOptions { showMoreImageOptions = true }
         }
-        .onChange(of: model.pdfMode) { _, _ in
-            model.scheduleReplan()
-        }
+        .onChange(of: model.suffix) { _, _ in model.scheduleReplan() }
+        .onChange(of: model.pdfMode) { _, _ in model.scheduleReplan() }
         .onChange(of: model.removeBackground) { _, _ in model.scheduleReplan() }
         .onChange(of: model.maxPixelSize) { _, _ in model.scheduleReplan() }
         .onChange(of: model.imageTargetBytes) { _, _ in model.scheduleReplan() }
         .onChange(of: model.videoTargetBytes) { _, _ in model.scheduleReplan() }
     }
+
+    // MARK: Images and PDFs
+
+    @ViewBuilder
+    private var mediaSection: some View {
+        Section {
+            if model.hasKind(.pdf) {
+                Picker("PDFs become", selection: $model.pdfMode) {
+                    ForEach(PDFMode.conversionCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+
+                if model.pdfMode == .pages || model.hasKind(.image) {
+                    Picker(
+                        model.hasKind(.image) ? "Images and PDF pages" : "Page format",
+                        selection: imageBinding
+                    ) {
+                        ForEach(ConversionTarget.imageTargets) { target in
+                            Text(target.displayName).tag(target)
+                        }
+                    }
+                }
+
+                note(pdfNote)
+            } else if model.hasKind(.image) {
+                Picker("Images become", selection: imageBinding) {
+                    ForEach(ConversionTarget.imageTargets) { target in
+                        Text(target.displayName).tag(target)
+                    }
+                }
+
+                if model.imageTarget == .pdf {
+                    note("Each image becomes a one-page PDF at its source pixel size.")
+                } else if !model.imageTarget.supportsQuality {
+                    note("Lossless output. Quality doesn't apply.")
+                }
+            }
+
+            if model.hasKind(.image) {
+                Toggle("Remove background", isOn: $model.removeBackground)
+
+                if model.removeBackground && model.imageTarget == .jpeg {
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+                        Label("JPEG can't keep the transparent background.", systemImage: "exclamationmark.triangle.fill")
+                            .font(Theme.Text.caption)
+                            .foregroundStyle(Theme.Palette.warning)
+                        Spacer(minLength: Theme.Space.sm)
+                        Button("Use PNG") {
+                            model.imageTarget = .png
+                            model.scheduleReplan()
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                DisclosureGroup(isExpanded: $showMoreImageOptions) {
+                    Toggle("Keep photo info (location, camera)", isOn: $model.preserveMetadata)
+
+                    Picker("Resize", selection: $model.maxPixelSize) {
+                        Text("Original").tag(Int?.none)
+                        ForEach([3840, 2560, 1920, 1280, 800], id: \.self) { px in
+                            Text("\(px) px").tag(Int?.some(px))
+                        }
+                    }
+
+                    if model.imageTarget.supportsQuality {
+                        Picker("Target file size", selection: $model.imageTargetBytes) {
+                            Text("None").tag(UInt64?.none)
+                            Text("5 MB").tag(UInt64?.some(5_000_000))
+                            Text("2 MB").tag(UInt64?.some(2_000_000))
+                            Text("1 MB").tag(UInt64?.some(1_000_000))
+                            Text("500 KB").tag(UInt64?.some(500_000))
+                        }
+                    }
+                } label: {
+                    Text("More image options")
+                }
+            }
+        } header: {
+            Label(
+                model.hasKind(.image) && model.hasKind(.pdf) ? "Images and PDFs" : model.hasKind(.pdf) ? "PDF" : "Images",
+                systemImage: model.hasKind(.pdf) && !model.hasKind(.image) ? "doc.richtext" : "photo"
+            )
+        }
+    }
+
+    private var pdfNote: String {
+        switch model.pdfMode {
+        case .pages:
+            return model.hasKind(.image)
+                ? "Each PDF page becomes an image in the format above. Images use the same format."
+                : "Each page becomes a separate image in the format above."
+        case .searchable:
+            return "Adds a selectable text layer with OCR. The result stays a PDF."
+        case .split:
+            return "Writes one PDF for each page."
+        case .compress:
+            return "Redraws images to make the file smaller. Text and vectors stay sharp."
+        case .merge:
+            return "Combines every PDF in the list into one document."
+        case .tool, .text:
+            return ""
+        }
+    }
+
+    // MARK: Units
+
+    private var unsupportedKinds: [String] {
+        var seen = Set<String>()
+        return model.items.compactMap { item in
+            guard item.kind != .image, item.kind != .data,
+                  item.kind != .pdf, item.kind != .document,
+                  item.kind != .audio, item.kind != .video else { return nil }
+            return seen.insert(item.kind.label).inserted ? item.kind.label : nil
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.Text.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: Bindings
 
     private var imageBinding: Binding<ConversionTarget> {
         Binding(
@@ -269,15 +395,5 @@ struct InspectorView: View {
                 model.scheduleReplan()
             }
         )
-    }
-
-    private var unsupportedKinds: [String] {
-        var seen = Set<String>()
-        return model.items.compactMap { item in
-            guard item.kind != .image, item.kind != .data,
-                  item.kind != .pdf, item.kind != .document,
-                  item.kind != .audio, item.kind != .video else { return nil }
-            return seen.insert(item.kind.label).inserted ? item.kind.label : nil
-        }
     }
 }

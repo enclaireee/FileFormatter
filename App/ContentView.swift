@@ -12,8 +12,11 @@ enum SidebarSelection: Hashable {
 struct ContentView: View {
     @Bindable var model: AppModel
     @State private var selection: SidebarSelection? = .queue
+    @State private var showSidebar = true
     @State private var showInspector = true
     @State private var isDropTargeted = false
+    @State private var showImageTools = false
+    @State private var showPDFTools = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var importTypes: [UTType] {
@@ -40,27 +43,79 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(model: model, selection: $selection)
-        } detail: {
-            detail
-                .inspector(isPresented: $showInspector) {
+        HStack(spacing: 0) {
+            if showSidebar {
+                SidebarView(model: model, selection: $selection)
+                    .frame(width: 230)
+                    .frame(maxHeight: .infinity)
+                    .background(.ultraThinMaterial)
+                    .transition(.move(edge: .leading))
+
+                Divider()
+            }
+
+            HStack(spacing: 0) {
+                detail
+
+                if showInspector {
+                    Divider()
+
                     InspectorView(model: model)
-                        .inspectorColumnWidth(min: 280, ideal: 320, max: 380)
+                        .frame(width: 330)
+                        .frame(maxHeight: .infinity)
+                        .background(Theme.Palette.canvas)
+                        .transition(.move(edge: .trailing))
                 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .dropDestination(for: URL.self) { urls, _ in
+            model.addFiles(urls)
+            return true
+        } isTargeted: { isDropTargeted = $0 }
         .navigationTitle("FileFormatter")
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
-                    showInspector.toggle()
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                        showSidebar.toggle()
+                    }
+                } label: {
+                    Label("Sidebar", systemImage: "sidebar.leading")
+                }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .help(showSidebar ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+            }
+
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                        showInspector.toggle()
+                    }
                 } label: {
                     Label("Inspector", systemImage: "sidebar.trailing")
                 }
                 .keyboardShortcut("0", modifiers: [.command, .option])
                 .help(showInspector ? "Hide inspector (⌥⌘0)" : "Show inspector (⌥⌘0)")
-            }
-            ToolbarItemGroup(placement: .primaryAction) {
+
+                Menu {
+                    Button {
+                        showImageTools = true
+                    } label: {
+                        Label("Image Tools…", systemImage: "crop.rotate")
+                    }
+                    Button {
+                        showPDFTools = true
+                    } label: {
+                        Label("PDF Tools…", systemImage: "doc.richtext")
+                    }
+                } label: {
+                    Label("Tools", systemImage: "wrench.and.screwdriver")
+                }
+                .disabled(model.isBusy)
+                .help("Rotate, crop, organize PDFs, and more")
+
                 Button {
                     model.showImporter = true
                 } label: {
@@ -111,6 +166,19 @@ struct ContentView: View {
         .sheet(isPresented: $model.showRename) {
             RenameSheet(model: model)
         }
+        .sheet(isPresented: $showImageTools) {
+            ImageToolsSheet(model: model, urls: toolURLs(for: .image))
+        }
+        .sheet(isPresented: $showPDFTools) {
+            PDFToolsSheet(model: model, urls: toolURLs(for: .pdf))
+        }
+    }
+
+    /// Selected rows of one kind, or every row of that kind when nothing is selected.
+    private func toolURLs(for kind: FileKind) -> [URL] {
+        let selected = model.items.filter { model.selection.contains($0.id) && $0.kind == kind }
+        let matching = selected.isEmpty ? model.items.filter { $0.kind == kind } : selected
+        return matching.map(\.sourceURL)
     }
 
     private var convertTitle: String {
@@ -128,132 +196,105 @@ struct ContentView: View {
         case .duplicates:
             DuplicatesView()
         case .history:
-            HistoryView()
+            HistoryView(model: model)
         }
     }
 
     private var queueDetail: some View {
-        VStack(spacing: 0) {
-            if model.isRunning {
-                RunProgressBar(model: model)
-                Divider()
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                if model.isEmpty {
+                    EmptyStateView(model: model, isDropTargeted: isDropTargeted)
+                } else {
+                    QueueView(model: model)
+                    BottomBar(model: model)
+                }
             }
+
             if let notice = model.notice {
-                NoticeBanner(model: model, notice: notice)
-                Divider()
-            }
-            if model.isEmpty {
-                EmptyStateView(model: model, isDropTargeted: isDropTargeted)
-            } else {
-                QueueView(model: model)
-            }
-            if !model.isEmpty {
-                Divider()
-                BottomBar(model: model)
+                NoticeToast(model: model, notice: notice)
+                    .padding(.horizontal, Theme.Space.xl)
+                    .padding(.bottom, model.isEmpty ? Theme.Space.xl : 54)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .move(edge: .bottom).combined(with: .opacity)
+                    )
+                    .zIndex(1)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .animation(reduceMotion ? nil : .default, value: model.isRunning)
-        .animation(reduceMotion ? nil : .default, value: model.notice?.id)
-        .dropDestination(for: URL.self) { urls, _ in
-            model.addFiles(urls)
-            return true
-        } isTargeted: { isDropTargeted = $0 }
+        .background(Theme.Palette.canvas)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.24), value: model.notice?.id)
     }
 }
 
-/// Inline progress while the window queue converts; the toolbar holds Stop.
-struct RunProgressBar: View {
-    let model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Converting \(min(model.completedCount + 1, model.totalToConvert)) of \(model.totalToConvert)")
-                    .font(.callout.weight(.medium))
-                    .monospacedDigit()
-                if let name = model.currentItemName {
-                    Text(name)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
-                Button("Stop") { model.cancel() }
-                    .controlSize(.small)
-                    .help("Stop after the current file. Finished files are kept. (⌘.)")
-            }
-            ProgressView(value: model.progress)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Converting \(model.completedCount) of \(model.totalToConvert) done")
-    }
-}
-
-/// Result of the last run, a stop, an undo or a hint. Recoverable things live here instead of modal alerts.
-struct NoticeBanner: View {
+/// Result of the last run, a stop, an undo or a hint. It floats above the queue
+/// instead of pushing the table down, so the working surface never jumps.
+struct NoticeToast: View {
     let model: AppModel
     let notice: AppModel.Notice
     @State private var confirmUndo = false
     @AppStorage(AppSettings.revealWhenDone) private var revealWhenDone = true
 
-    private var symbol: (String, Color) {
+    private var symbol: String {
         switch notice.tone {
-        case .success: ("checkmark.circle.fill", .green)
-        case .warning: ("exclamationmark.triangle.fill", .orange)
-        case .info: ("info.circle.fill", .secondary)
+        case .success: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .info: "info.circle.fill"
         }
     }
 
-    private var hasFailures: Bool {
-        model.items.contains { if case .failed = $0.status { true } else { false } }
+    private var tone: Theme.Tone {
+        switch notice.tone {
+        case .success: .success
+        case .warning: .warning
+        case .info: .info
+        }
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: symbol.0)
-                .font(.title3)
-                .foregroundStyle(symbol.1)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(notice.title).font(.callout.weight(.semibold))
+        HStack(alignment: .top, spacing: Theme.Space.md) {
+            IconTile(systemImage: symbol, tone: tone, size: 30)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(notice.title)
+                    .font(.callout.weight(.semibold))
                 if let detail = notice.detail {
                     Text(detail)
-                        .font(.callout)
+                        .font(Theme.Text.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let summary = notice.summary {
+                    actions(for: summary)
+                        .padding(.top, 2)
                 }
             }
-            Spacer(minLength: 12)
-            if let summary = notice.summary {
-                if hasFailures, model.lastSummary?.id == summary.id {
-                    Button("Retry Failed") { model.retryFailed() }
-                }
-                if !summary.outputs.isEmpty, !summary.undone {
-                    Button("Undo…") { confirmUndo = true }
-                        .help("Move the new files to the Trash")
-                    // Finder already opened on its own when revealWhenDone is on.
-                    let finder = Button("Show in Finder") { model.reveal(summary) }
-                    if revealWhenDone { finder } else { finder.buttonStyle(.borderedProminent) }
-                }
-            }
+
+            Spacer(minLength: Theme.Space.sm)
+
             Button {
                 model.notice = nil
             } label: {
                 Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             .help("Dismiss")
-            .accessibilityLabel("Dismiss")
+            .accessibilityLabel("Dismiss result")
         }
-        .controlSize(.small)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(Theme.Space.md)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08))
+        }
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
         .accessibilityElement(children: .contain)
         .confirmationDialog(
             "Undo this conversion?",
@@ -268,40 +309,92 @@ struct NoticeBanner: View {
             Text("Your originals aren't touched.")
         }
     }
+
+    @ViewBuilder
+    private func actions(for summary: RunSummary) -> some View {
+        HStack(spacing: Theme.Space.md) {
+            if notice.retryable {
+                Button("Retry Failed") { model.retryFailed() }
+                    .controlSize(.small)
+            }
+
+            if !summary.outputs.isEmpty, !summary.undone {
+                if revealWhenDone {
+                    Button("Show in Finder") { model.reveal(summary) }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                } else {
+                    Button("Show in Finder") { model.reveal(summary) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+
+                Button("Undo…") { confirmUndo = true }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Move the new files to the Trash")
+            }
+        }
+    }
 }
 
 struct BottomBar: View {
     @Bindable var model: AppModel
     @Environment(\.openSettings) private var openSettings
 
+    private var finishedCount: Int {
+        model.items.filter { $0.status == .completed }.count
+    }
+
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Theme.Space.sm) {
             Button {
                 openSettings()
             } label: {
-                Label("Saved \(model.destinationDescription.prefix(1).lowercased() + model.destinationDescription.dropFirst()) · originals kept", systemImage: "folder")
+                Label(model.destinationDescription, systemImage: "folder")
+                    .lineLimit(1)
             }
             .buttonStyle(.borderless)
             .help("Change where converted files are saved")
-            Spacer()
-            if model.items.contains(where: { $0.status == .completed }) {
-                Button("Clear Finished") { model.clearFinished() }
+
+            Spacer(minLength: Theme.Space.md)
+
+            if !model.selection.isEmpty {
+                Text("\(model.selection.count) selected")
+                    .monospacedDigit()
+                Button("Remove") { model.removeSelected() }
                     .disabled(model.isRunning)
-                    .help("Remove converted files from this list. Undo stays available in History.")
+                    .help("Remove the selected files from this list. Files on disk aren't touched.")
+                Divider()
+                    .frame(height: 14)
             }
+
             Button("Rename…") {
                 model.showRename = true
             }
             .disabled(model.isEmpty || model.isRunning)
             .help("Batch rename the files in the list")
-            Button("Clear All") { model.clearQueue() }
-                .disabled(model.isRunning)
-                .help("Empty the list. Files on disk aren't touched.")
+
+            Menu {
+                Button("Clear Finished") { model.clearFinished() }
+                    .disabled(model.isRunning || finishedCount == 0)
+                Button("Clear All", role: .destructive) { model.clearQueue() }
+                    .disabled(model.isRunning)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Clear the list")
+            .accessibilityLabel("More queue actions")
         }
-        .font(.caption)
+        .font(Theme.Text.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
-        .frame(height: 42)
+        .padding(.horizontal, Theme.Space.lg)
+        .frame(height: 40)
         .background(.bar)
+        .overlay(alignment: .top) { Hairline() }
     }
 }

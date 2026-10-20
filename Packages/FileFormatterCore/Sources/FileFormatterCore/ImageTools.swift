@@ -32,6 +32,72 @@ public enum ImageTools {
         return (image, properties)
     }
 
+    /// Applies crop, rotation and flip in that order, all in Core Image so pixels are only encoded once.
+    public static func apply(_ edit: ImageEdit, to image: CGImage) throws -> CGImage {
+        guard !edit.isIdentity else { return image }
+        var work = CIImage(cgImage: image)
+
+        if let spec = edit.crop, let aspect = spec.aspect, aspect > 0 {
+            work = cropped(work, aspect: aspect, anchorX: spec.anchorX, anchorY: spec.anchorY)
+        }
+
+        switch ((edit.rotation % 360) + 360) % 360 {
+        case 90: work = work.oriented(.right)
+        case 180: work = work.oriented(.down)
+        case 270: work = work.oriented(.left)
+        default: break
+        }
+
+        switch edit.flip {
+        case .horizontal: work = flipped(work, horizontal: true)
+        case .vertical: work = flipped(work, horizontal: false)
+        case .none: break
+        }
+
+        let space = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let result = ImageConverter.ciContext.createCGImage(
+            work, from: work.extent, format: .RGBA8, colorSpace: space
+        ) else {
+            throw ConversionError.writeFailed("Could not apply the image edit.")
+        }
+        return result
+    }
+
+    /// Keeps the largest rectangle of `aspect` that fits, positioned by the anchor (0 = top/leading).
+    private static func cropped(_ image: CIImage, aspect: Double, anchorX: Double, anchorY: Double) -> CIImage {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0 else { return image }
+        var width = extent.width
+        var height = extent.height
+        if width / height > aspect {
+            width = height * aspect
+        } else {
+            height = width / aspect
+        }
+        // Snap to whole pixels, but never below 1 or past the source.
+        width = min(max(1, width.rounded(.down)), extent.width)
+        height = min(max(1, height.rounded(.down)), extent.height)
+        let x = extent.minX + (extent.width - width) * min(max(anchorX, 0), 1)
+        // Core Image's origin is bottom-left; anchorY 0 means the top edge.
+        let y = extent.minY + (extent.height - height) * (1 - min(max(anchorY, 0), 1))
+        let rect = CGRect(x: x.rounded(.down), y: y.rounded(.down), width: width, height: height)
+        return image.cropped(to: rect)
+            .transformed(by: CGAffineTransform(translationX: -rect.minX, y: -rect.minY))
+    }
+
+    private static func flipped(_ image: CIImage, horizontal: Bool) -> CIImage {
+        let extent = image.extent
+        let moved = image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+        let mirrored = moved.transformed(by: horizontal
+            ? CGAffineTransform(scaleX: -1, y: 1)
+            : CGAffineTransform(scaleX: 1, y: -1))
+        return mirrored.transformed(by: CGAffineTransform(
+            translationX: horizontal ? extent.width : 0,
+            y: horizontal ? 0 : extent.height
+        ))
+    }
+
     /// Cuts out the subject. With `hdModel` (a compiled BiRefNet-lite), uses it for sharper edges and
     /// falls back to Vision if the model fails or finds nothing.
     public static func removeBackground(_ image: CGImage, cropToSubject: Bool = false, hdModel: URL? = nil) throws -> CGImage {

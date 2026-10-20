@@ -5,32 +5,67 @@ struct SidebarView: View {
     @Binding var selection: SidebarSelection?
 
     var body: some View {
-        List(selection: $selection) {
-            Section("Convert") {
-                Label("Convert Files", systemImage: "arrow.triangle.2.circlepath")
-                    .tag(SidebarSelection.queue)
+        VStack(spacing: 0) {
+            List(selection: $selection) {
+                Section("Convert") {
+                    row(
+                        "Convert Files",
+                        systemImage: "arrow.triangle.2.circlepath",
+                        tag: .queue,
+                        count: model.items.isEmpty ? nil : model.items.count,
+                        showsProgress: model.isRunning
+                    )
+                }
+
+                Section("Tools") {
+                    row(
+                        "Watch Folders",
+                        systemImage: "folder.badge.gearshape",
+                        tag: .watchFolders,
+                        count: model.watchRules.filter(\.isEnabled).count
+                    )
+                    row("Duplicates", systemImage: "square.on.square", tag: .duplicates)
+                }
+
+                Section("Activity") {
+                    row("History", systemImage: "clock.arrow.circlepath", tag: .history)
+                }
             }
-            Section("Tools") {
-                Label("Watch Folders", systemImage: "folder.badge.gearshape")
-                    .tag(SidebarSelection.watchFolders)
-                Label("Duplicates", systemImage: "square.on.square")
-                    .tag(SidebarSelection.duplicates)
-            }
-            Section("Activity") {
-                Label("History", systemImage: "clock.arrow.circlepath")
-                    .tag(SidebarSelection.history)
-            }
-        }
-        .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
-        .safeAreaInset(edge: .bottom) {
+            .listStyle(.sidebar)
+
+            Divider()
+
             HStack(spacing: 5) {
                 Image(systemName: "lock.shield")
-                Text("Local only")
+                Text("On-device only")
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
-            .padding(.bottom, 8)
+            .padding(.vertical, 8)
+            .help("No uploads. Every conversion runs on this Mac.")
         }
+    }
+
+    private func row(
+        _ title: String,
+        systemImage: String,
+        tag: SidebarSelection,
+        count: Int? = nil,
+        showsProgress: Bool = false
+    ) -> some View {
+        HStack(spacing: Theme.Space.sm) {
+            Label(title, systemImage: systemImage)
+            Spacer(minLength: Theme.Space.xs)
+            if showsProgress {
+                ProgressView()
+                    .controlSize(.mini)
+                    .help("Converting files")
+            } else if let count, count > 0 {
+                Text("\(count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .tag(tag)
     }
 }

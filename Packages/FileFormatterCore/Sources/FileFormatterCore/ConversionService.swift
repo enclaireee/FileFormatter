@@ -13,7 +13,8 @@ public actor ConversionService {
         urls: [URL],
         targets: TargetRecipe,
         suffix: String,
-        pdfMode: PDFMode = .pages
+        pdfMode: PDFMode = .pages,
+        pdfTool: PDFToolRequest? = nil
     ) throws -> PlanResult {
         let suffix = suffix.filter { $0 != "/" && $0 != ":" && $0 != "\0" }
         var seen = Set<String>()
@@ -70,7 +71,7 @@ public actor ConversionService {
                         do {
                             planned[key] = pdfMode == .split
                                 ? try pdfPageItems(url: url, target: .pdf, suffix: suffix, mode: .split)
-                                : [try wholePDFItem(url: url, suffix: suffix, mode: pdfMode)]
+                                : [try wholePDFItem(url: url, suffix: suffix, mode: pdfMode, tool: pdfTool)]
                         } catch {
                             warnings.append("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
                             planned[key] = [skippedItem(
@@ -177,6 +178,73 @@ public actor ConversionService {
         return try makePlan(urls: urls, targets: recipe, suffix: suffix)
     }
 
+    /// Plans the toolkit: images keep their own format, PDFs get one tool operation per document.
+    public func makeToolPlan(
+        urls: [URL],
+        imageEdit: ImageEdit?,
+        pdfTool: PDFToolRequest?,
+        suffix: String
+    ) throws -> PlanResult {
+        let suffix = suffix.filter { $0 != "/" && $0 != ":" && $0 != "\0" }
+        var seen = Set<String>()
+        let ordered = urls.compactMap { url -> URL? in
+            let path = url.standardizedFileURL.path
+            return seen.insert(path).inserted ? url : nil
+        }
+        var items: [ConversionItem] = []
+        var warnings: [String] = []
+
+        for url in ordered {
+            do {
+                let kind = Self.map(try FileFormatterRust.detectFile(path: url.standardizedFileURL.path).kind)
+                if kind == .pdf, let pdfTool {
+                    items.append(try wholePDFItem(
+                        url: url,
+                        suffix: suffix,
+                        mode: pdfTool.kind == .text ? .text : .tool,
+                        tool: pdfTool
+                    ))
+                } else if kind == .image, let imageEdit {
+                    let target = ConversionTarget.imageTarget(forExtension: url.pathExtension)
+                    guard target != .gif else {
+                        warnings.append("Skipped \(url.lastPathComponent): animated GIFs are not edited.")
+                        continue
+                    }
+                    let stem = url.deletingPathExtension().lastPathComponent
+                    let lossless = target == .png || target == .tiff
+                    items.append(ConversionItem(
+                        sourceURL: url,
+                        displayName: url.lastPathComponent,
+                        kind: .image,
+                        byteSize: fileSize(url),
+                        outputName: "\(stem)\(suffix).\(target.fileExtension)",
+                        fidelity: lossless ? .lossless : .reencode,
+                        note: Self.describe(imageEdit),
+                        status: .pending,
+                        target: target
+                    ))
+                } else {
+                    warnings.append("Skipped \(url.lastPathComponent): only images and PDFs use this tool.")
+                }
+            } catch {
+                warnings.append("Skipped \(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        return PlanResult(items: items, warnings: warnings)
+    }
+
+    private static func describe(_ edit: ImageEdit) -> String {
+        var parts: [String] = []
+        if let aspect = edit.crop?.aspect, aspect > 0 { parts.append("Crop \(String(format: "%.2f", aspect)):1") }
+        if edit.rotation % 360 != 0 { parts.append("Rotate \(((edit.rotation % 360) + 360) % 360)°") }
+        switch edit.flip {
+        case .horizontal: parts.append("Flip horizontal")
+        case .vertical: parts.append("Flip vertical")
+        case .none: break
+        }
+        return parts.isEmpty ? "Image edit" : parts.joined(separator: " · ")
+    }
+
     public func convert(
         _ item: ConversionItem,
         options: ConversionOptions
@@ -210,6 +278,17 @@ public actor ConversionService {
     ) async throws -> [URL] {
         var extras: [URL] = []
         switch (item.kind, options.target.family) {
+        case (.pdf, _) where item.pdfMode == .text:
+            var tool = options.pdfTool ?? PDFToolRequest(kind: .text)
+            if options.pdfTool == nil, [.markdown, .text, .html].contains(options.target) {
+                tool.textTarget = options.target
+            }
+            try PDFTools.apply(tool, source: item.sourceURL, destination: destination)
+        case (.pdf, _) where item.pdfMode == .tool:
+            guard let tool = options.pdfTool else {
+                throw ConversionError.unsupportedTarget("PDF tool")
+            }
+            try PDFTools.apply(tool, source: item.sourceURL, destination: destination)
         case (.pdf, _) where item.pdfMode == .merge:
             try PDFTools.merge(sources: item.mergeSources ?? [item.sourceURL], destination: destination)
         case (.pdf, _) where item.pdfMode == .searchable:
@@ -229,8 +308,14 @@ public actor ConversionService {
                 targetBytes: options.targetBytes
             )
         case (.image, .image), (.image, .pdf):
-            if options.removeBackground || options.maxPixelSize != nil || options.targetBytes != nil {
+            if options.imageEdit != nil || options.removeBackground || options.maxPixelSize != nil || options.targetBytes != nil {
                 var (image, properties) = try ImageTools.load(item.sourceURL, maxPixelSize: options.maxPixelSize)
+                if let edit = options.imageEdit {
+                    image = try ImageTools.apply(edit, to: image)
+                    // Framing changed, so the original pixel dimensions no longer describe the output.
+                    properties[kCGImagePropertyPixelWidth] = image.width
+                    properties[kCGImagePropertyPixelHeight] = image.height
+                }
                 if options.removeBackground {
                     image = try ImageTools.removeBackground(image, hdModel: options.backgroundModel)
                 }
@@ -402,29 +487,65 @@ public actor ConversionService {
         try ImageConverter.install(temporary: temporary, at: destination)
     }
 
-    private func wholePDFItem(url: URL, suffix: String, mode: PDFMode) throws -> ConversionItem {
+    private func wholePDFItem(
+        url: URL,
+        suffix: String,
+        mode: PDFMode,
+        tool: PDFToolRequest? = nil
+    ) throws -> ConversionItem {
         guard let document = PDFDocument(url: url) else {
             throw ConversionError.cannotReadSource(url.lastPathComponent)
         }
-        guard !document.isLocked else {
+        // Tool runs may open a locked PDF with the password typed in the sheet; plain conversions cannot.
+        let toolRun = mode == .tool || mode == .text
+        if document.isLocked && !toolRun {
             throw ConversionError.cannotReadSource("\(url.lastPathComponent) is password-protected")
         }
-        guard document.pageCount > 0 else {
+        let pageCount = document.pageCount
+        guard pageCount > 0 || toolRun else {
             throw ConversionError.cannotReadSource("\(url.lastPathComponent) has no pages")
         }
         let stem = url.deletingPathExtension().lastPathComponent
+        let textTarget = tool?.textTarget ?? .markdown
+        let outputName: String
+        let fidelity: FidelityLevel
+        let note: String
+        let target: ConversionTarget?
+        switch mode {
+        case .text:
+            outputName = "\(stem)\(suffix).\(textTarget.fileExtension)"
+            fidelity = .extract
+            note = "Extract text · \(pageCount) page(s)"
+            target = textTarget
+        case .tool:
+            outputName = "\(stem)\(suffix).pdf"
+            fidelity = tool?.fidelity ?? .reencode
+            note = "\(tool?.kind.label ?? "Edit PDF") · \(pageCount) page(s)"
+            target = .pdf
+        case .searchable:
+            outputName = "\(stem)\(suffix)-ocr.pdf"
+            fidelity = .reencode
+            note = "\(mode.label) · \(pageCount) page(s)"
+            target = nil
+        default:
+            outputName = "\(stem)\(suffix).pdf"
+            fidelity = .reencode
+            note = "\(mode.label) · \(pageCount) page(s)"
+            target = nil
+        }
         return ConversionItem(
             sourceURL: url,
             displayName: url.lastPathComponent,
             kind: .pdf,
             byteSize: fileSize(url),
-            outputName: mode == .searchable ? "\(stem)\(suffix)-ocr.pdf" : "\(stem)\(suffix).pdf",
-            fidelity: .reencode,
-            note: "\(mode.label) · \(document.pageCount) page(s)",
+            outputName: outputName,
+            fidelity: fidelity,
+            note: note,
             status: .pending,
             pageIndex: nil,
-            pageCount: document.pageCount,
-            pdfMode: mode
+            pageCount: pageCount,
+            pdfMode: mode,
+            target: target
         )
     }
 
