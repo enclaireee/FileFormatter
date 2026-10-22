@@ -61,6 +61,12 @@ enum MemoryBench {
 
         try? await Task.sleep(for: .seconds(5))
         log("launch", 0)
+        // What the popover's SwiftUI tree costs once built, before any conversion muddies the heap.
+        StatusItemController.shared.perform(NSSelectorFromString("toggle"))
+        try? await Task.sleep(for: .seconds(1))
+        StatusItemController.shared.perform(NSSelectorFromString("toggle"))
+        try? await Task.sleep(for: .seconds(2))
+        log("popover-first", 0)
         let photo: URL, pdf: URL, csvFile: URL, wav: URL
         do {
             photo = try makePhoto(width: 4_000, height: 3_000)
