@@ -130,8 +130,9 @@ public enum ImageTools {
         try cachedModel.withLock { cached in
             if let cached, cached.url == url { return cached.model }
             let config = MLModelConfiguration()
-            // ponytail: cpuAndGPU only; on this model the Neural Engine takes ~110 s to load and .all fails to build.
-            config.computeUnits = .cpuAndGPU
+            // ponytail: cpuOnly. The Neural Engine takes ~110 s to load and .all fails to build; the GPU pins ~3.5 GB
+            // of Metal buffers for the life of the process, while CPU peaks ~0.5 GB at the same speed.
+            config.computeUnits = .cpuOnly
             let model = try MLModel(contentsOf: url, configuration: config)
             cached = (url, model)
             return model
