@@ -15,7 +15,9 @@ struct WatchRule: Identifiable, Codable, Hashable, Sendable {
 actor WatchService {
     private var sources: [UUID: DispatchSourceFileSystemObject] = [:]
     private var rules: [UUID: WatchRule] = [:]
-    private var seen: Set<String> = []
+    // ponytail: last handled stamp per path, so edits replace an entry instead of adding one. Grows only with
+    // distinct files ever dropped in; prune missing paths if a watch folder ever sees millions.
+    private var seen: [String: String] = [:]
     private var handler: (@Sendable (WatchRule, URL) async -> Void)?
 
     func setHandler(_ handler: @escaping @Sendable (WatchRule, URL) async -> Void) {
@@ -69,10 +71,10 @@ actor WatchService {
         try? await Task.sleep(for: .milliseconds(900))
         let candidates = await files(in: rule, since: rule.lastEvent ?? Date().addingTimeInterval(-30))
         for url in candidates {
-            let key = "\(url.path):\(fileStamp(url))"
-            if seen.contains(key) { continue }
+            let stamp = fileStamp(url)
+            if seen[url.path] == stamp { continue }
             if await isStable(url) {
-                seen.insert(key)
+                seen[url.path] = stamp
                 await handler?(rule, url)
             }
         }

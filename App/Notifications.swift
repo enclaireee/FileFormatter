@@ -11,9 +11,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     private static let undo = "undo"
 
     private var requested = false
-    private var notified: Set<UUID> = []
-    // ponytail: summaries live only for this launch; notification buttons after a relaunch just open the app.
-    private var summaries: [UUID: RunSummary] = [:]
+    // ponytail: the last 20 summaries, this launch only (RunJournal keeps 20 too); older or post-relaunch
+    // notification buttons just open the app.
+    private var summaries: [RunSummary] = []
 
     func register() {
         let center = UNUserNotificationCenter.current()
@@ -35,8 +35,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         #if BENCH
         return
         #endif
-        guard force || !NSApp.isActive, notified.insert(summary.id).inserted else { return }
-        summaries[summary.id] = summary
+        guard force || !NSApp.isActive, !summaries.contains(where: { $0.id == summary.id }) else { return }
+        summaries.append(summary)
+        if summaries.count > 20 { summaries.removeFirst() }
         Task {
             if !requested {
                 requested = true
@@ -70,7 +71,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func handle(action: String, id: UUID?) {
-        guard let id, let summary = summaries[id] else { return }
+        guard let id, let summary = summaries.first(where: { $0.id == id }) else { return }
         switch action {
         case Self.undo:
             Task { _ = await AppModel.shared.undo(summary) }
