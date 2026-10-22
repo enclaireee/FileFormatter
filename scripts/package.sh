@@ -20,6 +20,9 @@ ditto "dist/FileFormatter.app" "$STAGE/FileFormatter.app"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname FileFormatter -srcfolder "$STAGE" -ov -format UDZO "dist/FileFormatter-$VERSION.dmg" >/dev/null
 rm -rf "$STAGE"
+# Keep only publishable artifacts in dist: Spotlight indexes a staged .app bundle
+# and shows it as a second installed copy.
+rm -rf "dist/FileFormatter.app"
 (cd dist && shasum -a 256 "FileFormatter-$VERSION.zip" "FileFormatter-$VERSION.dmg" > checksums.txt)
 echo "packaged dist/FileFormatter-$VERSION.dmg"
 cat dist/checksums.txt
