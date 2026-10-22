@@ -12,6 +12,7 @@
 		12342F99DF2914984A254A63 /* DropShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1592234909941C61FFF4E2 /* DropShelf.swift */; };
 		20B4073852F3353BBBF5C1C0 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4CB76D0E4B29DA462CD6937 /* SidebarView.swift */; };
 		297937C4C339F806B25245A6 /* FileFormatterCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3AC39FC343B95A2B3171DC1F /* FileFormatterCore */; };
+		2CF53DF3FD5D29F021E44281 /* MemoryBench.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FCDDB2B7761D96A5662B47 /* MemoryBench.swift */; };
 		3AB3587DA3AF0F33D7A216FE /* RenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 096820B4DD99528FBEF896F7 /* RenameSheet.swift */; };
 		3BAA07603E2FD4F65DBF4BF6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EEFA3B800A2C759F09E2A16F /* Assets.xcassets */; };
 		467DC9E50A6F68F6D430B6BB /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 503B638845F93B205581DCA7 /* Sparkle */; };
@@ -78,6 +79,7 @@
 		EAE94170E3FC700161E4BB06 /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		EEFA3B800A2C759F09E2A16F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		EFF453CF6AE17EEE622DE538 /* PDFToolsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFToolsSheet.swift; sourceTree = "<group>"; };
+		F4FCDDB2B7761D96A5662B47 /* MemoryBench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryBench.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -128,6 +130,7 @@
 				0BA8CCF77E239BE09BF815CA /* HotKey.swift */,
 				DF96B3474113F5F2E6EE8EF2 /* ImageToolsSheet.swift */,
 				57DAC922928A2E5D704577D9 /* InspectorView.swift */,
+				F4FCDDB2B7761D96A5662B47 /* MemoryBench.swift */,
 				6ACA2B6E6192D9DF188BC7C0 /* Notifications.swift */,
 				EFF453CF6AE17EEE622DE538 /* PDFToolsSheet.swift */,
 				38B941C9BE9D8620B0C00909 /* Presets.swift */,
@@ -290,6 +293,7 @@
 				0168F90419911981BA7D3090 /* HotKey.swift in Sources */,
 				E5FEA5E8B5902304D85CE7EC /* ImageToolsSheet.swift in Sources */,
 				5DADAB6C3FA9CDA74A25A43F /* InspectorView.swift in Sources */,
+				2CF53DF3FD5D29F021E44281 /* MemoryBench.swift in Sources */,
 				6788F976DE8F03D2DD34312D /* Notifications.swift in Sources */,
 				5B534565E9407DD764685AC3 /* PDFToolsSheet.swift in Sources */,
 				B18CBF5D4E196909D7452DD4 /* Presets.swift in Sources */,

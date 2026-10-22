@@ -32,6 +32,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// `force` posts even while the app is frontmost (Finder services activate it).
     func notify(_ summary: RunSummary, force: Bool = false) {
+        #if BENCH
+        return
+        #endif
         guard force || !NSApp.isActive, notified.insert(summary.id).inserted else { return }
         summaries[summary.id] = summary
         Task {

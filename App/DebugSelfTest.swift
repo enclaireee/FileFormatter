@@ -1,4 +1,4 @@
-#if DEBUG
+#if DEBUG || BENCH
 import CoreGraphics
 import Darwin
 import FileFormatterCore

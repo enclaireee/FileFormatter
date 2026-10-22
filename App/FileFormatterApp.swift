@@ -10,9 +10,14 @@ struct FileFormatterApp: App {
         #if DEBUG
         AppSelfTest.runIfRequested()
         #endif
+        #if BENCH
+        MemoryBench.runIfRequested()
+        #endif
         Task { @MainActor in
             StatusItemController.shared.start()
+            #if !BENCH
             _ = Updater.shared  // starts Sparkle's scheduled checks
+            #endif
         }
     }
 
