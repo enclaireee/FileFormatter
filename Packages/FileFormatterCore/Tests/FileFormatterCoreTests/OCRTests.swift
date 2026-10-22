@@ -15,7 +15,7 @@ struct OCRTests {
 
         let image = try makeTextImage("Hello FileFormatter")
         let service = OCRService()
-        let result = try await service.recognize(image: image)
+        let result = try service.recognize(image: image)
         #expect(result.text.lowercased().contains("fileformatter"))
 
         let pdf = directory.appendingPathComponent("ocr.pdf")

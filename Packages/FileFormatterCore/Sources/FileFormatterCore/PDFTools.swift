@@ -108,11 +108,14 @@ public enum PDFTools {
         filter.apply(to: context)
         for index in 1...max(pdf.numberOfPages, 1) {
             guard let page = pdf.page(at: index) else { continue }
-            var box = page.getBoxRect(.mediaBox)
-            let info = [kCGPDFContextMediaBox as String: Data(bytes: &box, count: MemoryLayout<CGRect>.size)]
-            context.beginPDFPage(info as CFDictionary)
-            context.drawPDFPage(page)
-            context.endPDFPage()
+            // Drains each page's decoded and recompressed images instead of holding them all until closePDF.
+            autoreleasepool {
+                var box = page.getBoxRect(.mediaBox)
+                let info = [kCGPDFContextMediaBox as String: Data(bytes: &box, count: MemoryLayout<CGRect>.size)]
+                context.beginPDFPage(info as CFDictionary)
+                context.drawPDFPage(page)
+                context.endPDFPage()
+            }
         }
         context.closePDF()
         filter.remove(from: context)
@@ -215,26 +218,28 @@ public enum PDFTools {
 
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
-            let pageInfo = [kCGPDFContextMediaBox as String: NSValue(rect: box)] as CFDictionary
-            context.beginPDFPage(pageInfo)
-            let source = page.bounds(for: .mediaBox)
-            let quarterTurn = abs(page.rotation % 180) == 90
-            let visual = quarterTurn
-                ? CGSize(width: source.height, height: source.width)
-                : source.size
-            let scale = min(
-                (size.width - margin * 2) / max(visual.width, 1),
-                (size.height - margin * 2) / max(visual.height, 1)
-            )
-            context.saveGState()
-            context.translateBy(
-                x: (size.width - visual.width * scale) / 2,
-                y: (size.height - visual.height * scale) / 2
-            )
-            context.scaleBy(x: scale, y: scale)
-            page.draw(with: .mediaBox, to: context)
-            context.restoreGState()
-            context.endPDFPage()
+            autoreleasepool {
+                let pageInfo = [kCGPDFContextMediaBox as String: NSValue(rect: box)] as CFDictionary
+                context.beginPDFPage(pageInfo)
+                let source = page.bounds(for: .mediaBox)
+                let quarterTurn = abs(page.rotation % 180) == 90
+                let visual = quarterTurn
+                    ? CGSize(width: source.height, height: source.width)
+                    : source.size
+                let scale = min(
+                    (size.width - margin * 2) / max(visual.width, 1),
+                    (size.height - margin * 2) / max(visual.height, 1)
+                )
+                context.saveGState()
+                context.translateBy(
+                    x: (size.width - visual.width * scale) / 2,
+                    y: (size.height - visual.height * scale) / 2
+                )
+                context.scaleBy(x: scale, y: scale)
+                page.draw(with: .mediaBox, to: context)
+                context.restoreGState()
+                context.endPDFPage()
+            }
         }
         context.closePDF()
     }
@@ -253,20 +258,22 @@ public enum PDFTools {
 
         for index in 0..<total {
             guard let page = document.page(at: index) else { continue }
-            let bounds = page.bounds(for: .mediaBox)
-            let info = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary
-            context.beginPDFPage(info)
-            context.saveGState()
-            page.draw(with: .mediaBox, to: context)
-            context.restoreGState()
+            autoreleasepool {
+                let bounds = page.bounds(for: .mediaBox)
+                let info = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary
+                context.beginPDFPage(info)
+                context.saveGState()
+                page.draw(with: .mediaBox, to: context)
+                context.restoreGState()
 
-            if !watermark.isEmpty {
-                drawWatermark(watermark, in: bounds, context: context)
+                if !watermark.isEmpty {
+                    drawWatermark(watermark, in: bounds, context: context)
+                }
+                if pageNumbers {
+                    drawPageNumber(index + 1, of: total, in: bounds, context: context)
+                }
+                context.endPDFPage()
             }
-            if pageNumbers {
-                drawPageNumber(index + 1, of: total, in: bounds, context: context)
-            }
-            context.endPDFPage()
         }
         context.closePDF()
     }
@@ -328,13 +335,15 @@ public enum PDFTools {
         }
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
-            let bounds = page.bounds(for: .mediaBox)
-            let info = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary
-            context.beginPDFPage(info)
-            context.saveGState()
-            page.draw(with: .mediaBox, to: context)
-            context.restoreGState()
-            context.endPDFPage()
+            autoreleasepool {
+                let bounds = page.bounds(for: .mediaBox)
+                let info = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary
+                context.beginPDFPage(info)
+                context.saveGState()
+                page.draw(with: .mediaBox, to: context)
+                context.restoreGState()
+                context.endPDFPage()
+            }
         }
         context.closePDF()
     }

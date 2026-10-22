@@ -31,9 +31,13 @@ enum PDFPageRenderer {
             width: max(bounds.width * scale, 1),
             height: max(bounds.height * scale, 1)
         )
-        let thumbnail = page.thumbnail(of: target, for: .cropBox)
-        var rect = CGRect(origin: .zero, size: thumbnail.size)
-        guard let image = thumbnail.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+        // The NSImage thumbnail is autoreleased; drain it here so a batch of pages doesn't pile them up.
+        let image: CGImage? = autoreleasepool {
+            let thumbnail = page.thumbnail(of: target, for: .cropBox)
+            var rect = CGRect(origin: .zero, size: thumbnail.size)
+            return thumbnail.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        }
+        guard let image else {
             throw ConversionError.cannotReadSource("PDF page \((page.document?.index(for: page) ?? 0) + 1)")
         }
         return image

@@ -557,7 +557,7 @@ public actor ConversionService {
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         do {
-            try await OCRService().makeSearchablePDF(
+            try OCRService().makeSearchablePDF(
                 source: source,
                 destination: temporary
             )

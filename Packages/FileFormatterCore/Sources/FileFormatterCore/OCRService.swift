@@ -38,7 +38,8 @@ public enum OCRError: LocalizedError, Sendable {
 public actor OCRService {
     public init() {}
 
-    public func recognize(
+    // Stateless, so nonisolated: makeSearchablePDF can call it inside a per-page autoreleasepool.
+    nonisolated public func recognize(
         image: CGImage,
         languages: [String] = []
     ) throws -> OCRResult {
@@ -97,7 +98,7 @@ public actor OCRService {
         context.closePDF()
     }
 
-    public func makeSearchablePDF(
+    nonisolated public func makeSearchablePDF(
         source: URL,
         destination: URL,
         languages: [String] = []
@@ -119,23 +120,26 @@ public actor OCRService {
 
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
-            let bounds = page.bounds(for: .mediaBox)
-            let image = try PDFPageRenderer.render(page: page)
-            let result = try recognize(image: image, languages: languages)
+            // Each 2x page bitmap is autoreleased; drain per page or every page stays alive until the loop ends.
+            try autoreleasepool {
+                let bounds = page.bounds(for: .mediaBox)
+                let image = try PDFPageRenderer.render(page: page)
+                let result = try recognize(image: image, languages: languages)
 
-            let pageInfo = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary
-            context.beginPDFPage(pageInfo)
-            context.saveGState()
-            page.draw(with: .mediaBox, to: context)
-            context.restoreGState()
-            drawInvisible(result.lines, in: bounds, context: context)
-            context.endPDFPage()
+                let pageInfo = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary
+                context.beginPDFPage(pageInfo)
+                context.saveGState()
+                page.draw(with: .mediaBox, to: context)
+                context.restoreGState()
+                drawInvisible(result.lines, in: bounds, context: context)
+                context.endPDFPage()
+            }
         }
 
         context.closePDF()
     }
 
-    private func drawInvisible(
+    nonisolated private func drawInvisible(
         _ lines: [OCRLine],
         in page: CGRect,
         context: CGContext
