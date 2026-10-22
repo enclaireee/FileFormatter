@@ -30,7 +30,9 @@ CSV="$OUT/bench-$(date +%Y%m%d-%H%M%S).csv"
 cleanup() { rm -rf "$FAKE_HOME"; defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-CFFIXED_USER_HOME="$FAKE_HOME" "$APP/Contents/MacOS/FileFormatter" --memory-bench "$MINUTES" "$CSV" >"$OUT/bench.log" 2>&1 &
+# Only LaunchServices applies Info.plist's LSEnvironment, so pass it on by hand to measure what ships.
+LARGE_CACHE="$(/usr/libexec/PlistBuddy -c 'Print :LSEnvironment:MallocLargeCache' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+env ${LARGE_CACHE:+MallocLargeCache="$LARGE_CACHE"} CFFIXED_USER_HOME="$FAKE_HOME" "$APP/Contents/MacOS/FileFormatter" --memory-bench "$MINUTES" "$CSV" >"$OUT/bench.log" 2>&1 &
 PID=$!
 
 # The app logs its own footprint; this adds child processes (ffmpeg) to catch the whole-tree peak.
@@ -50,7 +52,7 @@ wait "$PID" || { echo "bench failed:"; tail -20 "$OUT/bench.log"; exit 1; }
 echo "csv: $CSV"
 awk -F, -v tree="$TREE_PEAK" '
   NR == 1 { next }
-  $1 == "launch" || $1 == "idle-30s" { printf "%-14s %8.1f MB\n", $1, $3; next }
+  $1 == "launch" || $1 == "popover-first" || $1 == "idle-30s" { printf "%-14s %8.1f MB\n", $1, $3; next }
   {
     if (!($1 in first)) { first[$1] = $3; order[++n] = $1 }
     last[$1] = $3; if ($4 > peak[$1]) peak[$1] = $4; passes = $2

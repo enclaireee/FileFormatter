@@ -26,6 +26,14 @@
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
+	<!-- libmalloc otherwise keeps every freed large buffer (decoded pages and bitmaps) dirty and counted in the
+	     footprint, so a menu bar app idles at hundreds of MB after one big PDF or image run. No measurable speed cost
+	     in scripts/memory-bench.sh, which sets the same variable. Applies to launches through LaunchServices. -->
+	<key>LSEnvironment</key>
+	<dict>
+		<key>MallocLargeCache</key>
+		<string>0</string>
+	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
