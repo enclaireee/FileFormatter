@@ -92,7 +92,22 @@ enum AppSettings {
 
     static var opensAtLogin: Bool { SMAppService.mainApp.status == .enabled }
 
+    /// The copy the login item was last registered from. SMAppService keeps that path, so a moved copy needs re-registering.
+    private static let loginItemPath = "login.path"
+
     static func setOpensAtLogin(_ on: Bool) throws {
-        on ? try SMAppService.mainApp.register() : try SMAppService.mainApp.unregister()
+        guard on else { return try SMAppService.mainApp.unregister() }
+        try SMAppService.mainApp.register()
+        UserDefaults.standard.set(Bundle.main.bundlePath, forKey: loginItemPath)
+    }
+
+    /// Moves the login item to this copy, or login starts a stale copy that gets its own Dock icon beside the pinned one.
+    /// Only from an Applications folder, so Xcode and bench builds never take the login item over.
+    static func repointLoginItem() {
+        let path = Bundle.main.bundlePath
+        guard opensAtLogin, path.contains("/Applications/"),
+              UserDefaults.standard.string(forKey: loginItemPath) != path else { return }
+        try? SMAppService.mainApp.unregister()
+        try? setOpensAtLogin(true)
     }
 }

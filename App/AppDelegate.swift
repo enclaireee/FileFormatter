@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
         NotificationService.shared.register()
+        AppSettings.repointLoginItem()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
