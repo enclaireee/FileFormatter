@@ -8,6 +8,7 @@ struct RenameSheet: View {
     @State private var start = 1
     @State private var done: RunSummary?
     @State private var error: String?
+    @State private var creationDates: [URL: Date] = [:]
 
     private var sources: [URL] {
         var seen = Set<String>()
@@ -15,7 +16,7 @@ struct RenameSheet: View {
     }
 
     private var preview: [Renamer.Rename] {
-        Renamer.preview(sources, pattern: pattern, start: start)
+        Renamer.preview(sources, pattern: pattern, start: start, creationDates: creationDates)
     }
 
     var body: some View {
@@ -31,6 +32,20 @@ struct RenameSheet: View {
         }
         .padding(22)
         .frame(width: 520, height: 460)
+        .task(id: sources) {
+            let urls = sources
+            let loaded = await Task.detached(priority: .userInitiated) {
+                var map: [URL: Date] = [:]
+                map.reserveCapacity(urls.count)
+                for url in urls {
+                    if let created = try? url.resourceValues(forKeys: [.creationDateKey]).creationDate {
+                        map[url] = created
+                    }
+                }
+                return map
+            }.value
+            creationDates = loaded
+        }
         .onChange(of: pattern) { error = nil }
         .onChange(of: start) { error = nil }
     }

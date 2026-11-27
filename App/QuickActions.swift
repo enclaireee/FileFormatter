@@ -1,6 +1,56 @@
+import AppKit
 import FileFormatterCore
 import Foundation
 import UniformTypeIdentifiers
+
+/// Reads copied files or raw screenshot/image bitmaps from the macOS clipboard for 1-click Paste (`⌘V`).
+@MainActor
+enum ClipboardImport {
+    nonisolated static var stagingDirectory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("FileFormatterClipboard", isDirectory: true)
+    }
+
+    nonisolated static func isClipboardStaged(_ url: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(stagingDirectory.standardizedFileURL.path)
+    }
+
+    static func hasPasteableContent() -> Bool {
+        let pb = NSPasteboard.general
+        if pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) {
+            return true
+        }
+        return pb.availableType(from: [.png, .tiff]) != nil
+    }
+
+    static func pasteURLs() -> [URL] {
+        let pb = NSPasteboard.general
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            return urls
+        }
+        let pngData: Data? = if let directPNG = pb.data(forType: .png) {
+            directPNG
+        } else if let tiffData = pb.data(forType: .tiff),
+                  let rep = NSBitmapImageRep(data: tiffData) {
+            rep.representation(using: .png, properties: [:])
+        } else {
+            nil
+        }
+        guard let pngData else { return [] }
+        let folder = stagingDirectory
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        let fileURL = folder.appendingPathComponent("Pasted-Image-\(formatter.string(from: .now)).png")
+        do {
+            try pngData.write(to: fileURL, options: .atomic)
+            return [fileURL]
+        } catch {
+            return []
+        }
+    }
+}
 
 /// Everything one conversion run needs, independent of the window's state.
 struct ConversionJob: Sendable {
@@ -22,6 +72,8 @@ struct ConversionJob: Sendable {
     var pdfTool: PDFToolRequest?
     /// Set per run from Settings; nil writes next to the source.
     var outputDirectory: URL?
+    /// True for background watch-folder conversions so child codecs run with utility priority.
+    var backgroundPriority = false
 
     var isTool: Bool { imageEdit != nil || pdfTool != nil }
 
@@ -41,6 +93,11 @@ struct ConversionJob: Sendable {
         let goal = still
             ? imageTargetBytes
             : mediaTargetBytes ?? mediaTargetRatio.map { UInt64(Double(item.byteSize) * $0) }
+        let effectiveOutputDir = outputDirectory ?? (
+            ClipboardImport.isClipboardStaged(item.sourceURL)
+                ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                : nil
+        )
         return ConversionOptions(
             target: target,
             quality: quality,
@@ -53,7 +110,8 @@ struct ConversionJob: Sendable {
             backgroundModel: AppSettings.backgroundModel,
             imageEdit: item.kind == .image ? imageEdit : nil,
             pdfTool: item.kind == .pdf ? pdfTool : nil,
-            outputDirectory: outputDirectory
+            outputDirectory: effectiveOutputDir,
+            backgroundPriority: backgroundPriority
         )
     }
 }
@@ -98,6 +156,16 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         ]
         guard let match = all.first(where: { $0.id == id }) else { return nil }
         self = match
+    }
+
+    var actionTitle: String {
+        switch self {
+        case .to(let target):
+            let short = target.displayName.components(separatedBy: " (").first ?? target.displayName
+            return "Convert to \(short)"
+        default:
+            return title
+        }
     }
 
     var title: String {
@@ -201,9 +269,12 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         return kind == .unknown ? nil : "lastQuickAction.\(kind.rawValue)"
     }
 
-    /// Plain format conversions that make sense for the dropped kinds, for the "Other formats" menu.
+    /// Plain format conversions that make sense for the dropped kinds, for the "More formats" menu.
     static func otherFormats(for urls: [URL]) -> [QuickAction] {
         let kinds = Set(urls.map(kind(of:)))
+        let extensions = Set(urls.map { normalizedExtension($0.pathExtension) })
+        let singleExt = extensions.count == 1 ? extensions.first : nil
+
         var families: [FormatFamily] = []
         if kinds.contains(.image) || kinds.contains(.pdf) { families += [.image] }
         if kinds.contains(.video) { families += [.video, .audio] }
@@ -211,38 +282,90 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         if kinds.contains(.data) { families += [.data] }
         if kinds.contains(.document) { families += [.document] }
         var result = ConversionTarget.allCases
-            .filter { families.contains($0.family) && $0 != .searchablePDF && !($0 == .gif && !kinds.contains(.image)) }
+            .filter { target in
+                guard families.contains(target.family),
+                      target != .searchablePDF,
+                      !(target == .gif && !kinds.contains(.image)) else { return false }
+                // Don't offer converting a homogeneous drop to the exact format it already has.
+                if let singleExt, normalizedExtension(target.fileExtension) == singleExt {
+                    return false
+                }
+                return true
+            }
             .map(QuickAction.to)
         if kinds.contains(.video) { result.append(.videoToGIF) }
         return result
     }
 
+    private static func normalizedExtension(_ ext: String) -> String {
+        switch ext.lowercased() {
+        case "jpeg", "jpe": "jpg"
+        case "tif": "tiff"
+        case "heif": "heic"
+        case "yml": "yaml"
+        case "markdown": "md"
+        case "aif": "aiff"
+        default: ext.lowercased()
+        }
+    }
+
     private static func defaults(for urls: [URL]) -> [QuickAction] {
-        let extensions = Set(urls.map { $0.pathExtension.lowercased() })
+        let extensions = Set(urls.map { normalizedExtension($0.pathExtension) })
         let kinds = Set(urls.map(kind(of:)))
         var result: [QuickAction] = []
 
         if kinds.contains(.image) {
-            let allJPEG = extensions.isSubset(of: ["jpg", "jpeg"])
-            result += [allJPEG ? .to(.png) : .to(.jpeg), .removeBackground, .compressImage, .makePDF]
-            result += [allJPEG ? .to(.heic) : .to(.png), .to(.webp)]
+            let onlyJPG = extensions == ["jpg"]
+            let onlyPNG = extensions == ["png"]
+            let onlyWebP = extensions == ["webp"]
+            if onlyJPG {
+                result += [.compressImage, .to(.webp), .to(.png), .makePDF, .removeBackground]
+            } else if onlyPNG {
+                result += [.to(.webp), .removeBackground, .compressImage, .to(.jpeg), .makePDF]
+            } else if onlyWebP {
+                result += [.to(.png), .to(.jpeg), .removeBackground, .compressImage, .makePDF]
+            } else {
+                result += [.to(.jpeg), .removeBackground, .compressImage, .to(.png), .to(.webp), .makePDF]
+            }
         }
         if kinds.contains(.pdf) {
             let pdfCount = urls.filter { kind(of: $0) == .pdf }.count
-            result += pdfCount > 1 ? [.makePDF, .compressPDF, .splitPDF] : [.compressPDF, .splitPDF]
-            result += [.to(.png), .ocr]
+            result += pdfCount > 1 ? [.makePDF, .compressPDF, .to(.png), .splitPDF] : [.compressPDF, .to(.png), .ocr, .splitPDF]
         }
         if kinds.contains(.video) {
-            result += [.to(.mp4), .videoToGIF, .extractAudio, .compressVideo]
+            let onlyMP4 = extensions == ["mp4"]
+            if onlyMP4 {
+                result += [.compressVideo, .videoToGIF, .extractAudio, .to(.mov)]
+            } else {
+                result += [.to(.mp4), .compressVideo, .videoToGIF, .extractAudio]
+            }
         }
         if kinds.contains(.audio) {
-            result += [.to(.mp3), .to(.m4a), .to(.wav)]
+            let onlyMP3 = extensions == ["mp3"]
+            if onlyMP3 {
+                result += [.to(.m4a), .to(.wav), .to(.flac)]
+            } else {
+                result += [.to(.mp3), .to(.m4a), .to(.flac), .to(.wav)]
+            }
         }
         if kinds.contains(.data) {
-            result += [.to(.json), .to(.csv), .to(.xlsx)]
+            let onlyJSON = extensions == ["json"]
+            let onlyCSV = extensions == ["csv"]
+            if onlyJSON {
+                result += [.to(.csv), .to(.xlsx), .to(.yaml)]
+            } else if onlyCSV {
+                result += [.to(.xlsx), .to(.json), .to(.tsv)]
+            } else {
+                result += [.to(.json), .to(.csv), .to(.xlsx)]
+            }
         }
         if kinds.contains(.document) {
-            result += [.to(.markdown), .to(.html), .to(.text)]
+            let onlyMD = extensions == ["md"]
+            if onlyMD {
+                result += [.to(.html), .to(.text)]
+            } else {
+                result += [.to(.markdown), .to(.html), .to(.text)]
+            }
         }
         return result
     }

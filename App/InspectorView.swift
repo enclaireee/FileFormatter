@@ -1,12 +1,11 @@
+import AppKit
 import FileFormatterCore
 import SwiftUI
 
 struct InspectorView: View {
     @Bindable var model: AppModel
-    @AppStorage(AppSettings.hdBackground) private var hdBackground = true
-    @State private var showMoreImageOptions = false
-
-    @Environment(\.openSettings) private var openSettings
+    @AppStorage(AppSettings.useFolder) private var useFolder = false
+    @State private var showFineTuning = false
 
     private var usesQuality: Bool {
         (model.hasKind(.image) && model.imageTarget.supportsQuality)
@@ -32,186 +31,57 @@ struct InspectorView: View {
     }
 
     var body: some View {
-        Group {
-            if model.isEmpty {
-                empty
-            } else {
-                form
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.Palette.canvas)
-    }
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 18) {
+                recipeCard
 
-    private var empty: some View {
-        EmptyStatePanel(
-            systemImage: "slider.horizontal.3",
-            title: "Settings",
-            message: "Add files to choose formats, quality, and where the results go. You can also start from a preset."
-        ) {
-            Button("Add Files…") {
-                model.showImporter = true
-            }
-            .buttonStyle(.borderedProminent)
-        }
-    }
-
-    private var form: some View {
-        Form {
-            if model.isRunning {
-                Section {
-                    Label("Settings are locked while files are converting.", systemImage: "lock.fill")
-                        .font(Theme.Text.body)
-                        .foregroundStyle(.secondary)
+                if model.hasKind(.image) {
+                    imageCard
                 }
-            }
 
-            Section {
-                Picker("Preset", selection: presetBinding) {
-                    Text("Custom").tag("custom")
-                    Divider()
-                    ForEach(Preset.builtIn) { preset in
-                        Label(preset.name, systemImage: preset.systemImage).tag(preset.id)
-                    }
+                if model.hasKind(.pdf) {
+                    pdfCard
                 }
-            } header: {
-                Label("Recipe", systemImage: "wand.and.stars")
-            } footer: {
-                note("Sets the formats and quality for every kind of file in the queue.")
-            }
 
-            if model.hasKind(.image) || model.hasKind(.pdf) {
-                mediaSection
-            }
-
-            if model.hasKind(.document) {
-                Section {
-                    Picker("Documents become", selection: documentBinding) {
-                        ForEach(ConversionTarget.documentTargets) { target in
-                            Text(target.displayName).tag(target)
-                        }
-                    }
-                } header: {
-                    Label("Documents", systemImage: "doc.text")
-                } footer: {
-                    note("Headings, lists, tables and images are kept. Shapes and charts are not.")
+                if model.hasKind(.video) {
+                    videoCard
                 }
-            }
 
-            if model.hasKind(.data) {
-                Section {
-                    Picker("Data becomes", selection: dataBinding) {
-                        ForEach(ConversionTarget.dataTargets) { target in
-                            Text(target.displayName).tag(target)
-                        }
-                    }
-                } header: {
-                    Label("Data", systemImage: "tablecells")
-                } footer: {
-                    note("CSV and TSV use the first row as column names. JSON output is a list of objects.")
+                if model.hasKind(.audio) {
+                    audioCard
                 }
-            }
 
-            if model.hasKind(.audio) {
-                Section {
-                    Picker("Audio becomes", selection: audioBinding) {
-                        ForEach(ConversionTarget.audioTargets) { target in
-                            Text(target.displayName).tag(target)
-                        }
-                    }
-                } header: {
-                    Label("Audio", systemImage: "waveform")
-                } footer: {
-                    note("MP3, M4A, Opus and OGG are lossy. FLAC, WAV and AIFF keep the original samples.")
+                if model.hasKind(.data) {
+                    dataCard
                 }
-            }
 
-            if model.hasKind(.video) {
-                Section {
-                    Picker("Video becomes", selection: videoBinding) {
-                        ForEach(ConversionTarget.videoTargets) { target in
-                            Text(target.displayName).tag(target)
-                        }
-                        Divider()
-                        Text(ConversionTarget.gif.displayName).tag(ConversionTarget.gif)
-                        Divider()
-                        Section("Audio only") {
-                            ForEach(ConversionTarget.audioTargets) { target in
-                                Text(target.displayName).tag(target)
-                            }
-                        }
-                    }
-                    if model.videoTarget.family == .video {
-                        Picker("Compress to", selection: $model.videoTargetBytes) {
-                            Text("Original quality").tag(UInt64?.none)
-                            ForEach([10, 25, 50, 100], id: \.self) { mb in
-                                Text("\(mb) MB").tag(UInt64?.some(UInt64(mb) * 1_000_000))
-                            }
-                        }
-                    }
-                } header: {
-                    Label("Video", systemImage: "film")
-                } footer: {
-                    note("H.264 uses the hardware encoder. WebM uses VP9. Subtitles are kept when the format allows.")
+                if model.hasKind(.document) {
+                    documentCard
                 }
-            }
 
-            if !unsupportedKinds.isEmpty {
-                Section {
+                if usesQuality {
+                    qualityCard
+                }
+
+                outputCard
+
+                if !unsupportedKinds.isEmpty {
                     Label(
-                        "Not convertible yet: \(unsupportedKinds.joined(separator: ", ")). They stay in the queue as skipped.",
+                        "Unsupported here: \(unsupportedKinds.joined(separator: ", ")). Those files are skipped safely.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(Theme.Text.caption)
                     .foregroundStyle(Theme.Palette.warning)
-                } header: {
-                    Label("Other files", systemImage: "questionmark.folder")
                 }
             }
-
-            if usesQuality {
-                Section {
-                    HStack(spacing: Theme.Space.sm) {
-                        Slider(value: $model.quality, in: 0.3...1.0)
-                        Text("\(Int(model.quality * 100))%")
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 42, alignment: .trailing)
-                    }
-                } header: {
-                    Label("Quality", systemImage: "slider.horizontal.3")
-                } footer: {
-                    note("Used by formats that support it. Lossless formats ignore this.")
-                }
-            }
-
-            Section {
-                LabeledContent("Save to") {
-                    HStack(spacing: Theme.Space.sm) {
-                        Text(model.destinationDescription)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Button("Change…") { openSettings() }
-                            .controlSize(.small)
-                    }
-                }
-
-                TextField("Add to name", text: $model.suffix)
-                    .onSubmit { model.scheduleReplan() }
-
-                if let example = model.outputExample {
-                    note("Example: \(example)")
-                }
-            } header: {
-                Label("Output", systemImage: "folder")
-            } footer: {
-                note("Originals are never changed. A number is added if the name is already taken.")
-            }
+            .padding(16)
         }
-        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.Palette.canvas)
         .disabled(model.isRunning)
+        .opacity(model.isRunning ? 0.65 : 1)
         .onAppear {
-            if hasCustomImageOptions { showMoreImageOptions = true }
+            if hasCustomImageOptions { showFineTuning = true }
         }
         .onChange(of: model.suffix) { _, _ in model.scheduleReplan() }
         .onChange(of: model.pdfMode) { _, _ in model.scheduleReplan() }
@@ -221,112 +91,380 @@ struct InspectorView: View {
         .onChange(of: model.videoTargetBytes) { _, _ in model.scheduleReplan() }
     }
 
-    // MARK: Images and PDFs
+    // MARK: Sections
 
-    @ViewBuilder
-    private var mediaSection: some View {
-        Section {
-            if model.hasKind(.pdf) {
-                Picker("PDFs become", selection: $model.pdfMode) {
+    private var recipeCard: some View {
+        inspectorSection("Quick Recipe", systemImage: "wand.and.stars") {
+            Picker("Preset", selection: presetBinding) {
+                Text("Custom").tag("custom")
+                Divider()
+                ForEach(Preset.builtIn) { preset in
+                    Label(preset.name, systemImage: preset.systemImage).tag(preset.id)
+                }
+            }
+            .labelsHidden()
+        }
+    }
+
+    private var imageCard: some View {
+        let commonTargets: [ConversionTarget] = [.jpeg, .png, .webp, .heic, .avif, .pdf]
+        let extraTargets: [ConversionTarget] = [.tiff, .gif]
+
+        return inspectorSection("Images → Format", systemImage: "photo") {
+            FlowLayout(spacing: 6) {
+                ForEach(commonTargets) { target in
+                    formatPill(
+                        title: shortLabel(for: target),
+                        selected: model.imageTarget == target
+                    ) {
+                        model.imageTarget = target
+                        model.scheduleReplan()
+                    }
+                }
+                Menu {
+                    ForEach(extraTargets) { target in
+                        Button(target.displayName) {
+                            model.imageTarget = target
+                            model.scheduleReplan()
+                        }
+                    }
+                } label: {
+                    Text(extraTargets.contains(model.imageTarget) ? model.imageTarget.displayName : "More…")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                }
+                .menuStyle(.button)
+                .controlSize(.small)
+                .fixedSize()
+            }
+
+            Toggle("Remove background (transparent cutout)", isOn: Binding(
+                get: { model.removeBackground },
+                set: { on in
+                    model.removeBackground = on
+                    if on && model.imageTarget == .jpeg {
+                        model.imageTarget = .png
+                    }
+                }
+            ))
+            .font(Theme.Text.body)
+            .padding(.top, 2)
+
+            DisclosureGroup(isExpanded: $showFineTuning) {
+                VStack(alignment: .leading, spacing: 8) {
+                    LabeledContent("Resize") {
+                        Picker("", selection: $model.maxPixelSize) {
+                            Text("Original").tag(Int?.none)
+                            ForEach([3840, 2560, 1920, 1280, 800], id: \.self) { px in
+                                Text("≤ \(px) px").tag(Int?.some(px))
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 120)
+                    }
+                    .font(Theme.Text.caption)
+
+                    if model.imageTarget.supportsQuality {
+                        LabeledContent("Max file size") {
+                            Picker("", selection: $model.imageTargetBytes) {
+                                Text("No limit").tag(UInt64?.none)
+                                Text("5 MB").tag(UInt64?.some(5_000_000))
+                                Text("2 MB").tag(UInt64?.some(2_000_000))
+                                Text("1 MB").tag(UInt64?.some(1_000_000))
+                                Text("500 KB").tag(UInt64?.some(500_000))
+                            }
+                            .labelsHidden()
+                            .frame(width: 120)
+                        }
+                        .font(Theme.Text.caption)
+                    }
+
+                    Toggle("Keep camera & location EXIF", isOn: $model.preserveMetadata)
+                        .font(Theme.Text.caption)
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("Resize, size cap & metadata")
+                    .font(Theme.Text.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var pdfCard: some View {
+        inspectorSection("PDF Action", systemImage: "doc.richtext") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Action", selection: $model.pdfMode) {
                     ForEach(PDFMode.conversionCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
+                .labelsHidden()
 
-                if model.pdfMode == .pages || model.hasKind(.image) {
-                    Picker(
-                        model.hasKind(.image) ? "Images and PDF pages" : "Page format",
-                        selection: imageBinding
-                    ) {
-                        ForEach(ConversionTarget.imageTargets) { target in
-                            Text(target.displayName).tag(target)
+                if model.pdfMode == .pages && !model.hasKind(.image) {
+                    FlowLayout(spacing: 6) {
+                        ForEach([ConversionTarget.png, .jpeg, .webp, .tiff]) { target in
+                            formatPill(title: shortLabel(for: target), selected: model.imageTarget == target) {
+                                model.imageTarget = target
+                                model.scheduleReplan()
+                            }
                         }
                     }
                 }
 
                 note(pdfNote)
-            } else if model.hasKind(.image) {
-                Picker("Images become", selection: imageBinding) {
-                    ForEach(ConversionTarget.imageTargets) { target in
-                        Text(target.displayName).tag(target)
-                    }
-                }
-
-                if model.imageTarget == .pdf {
-                    note("Each image becomes a one-page PDF at its source pixel size.")
-                } else if !model.imageTarget.supportsQuality {
-                    note("Lossless output. Quality doesn't apply.")
-                }
             }
+        }
+    }
 
-            if model.hasKind(.image) {
-                Toggle("Remove background", isOn: $model.removeBackground)
-
-                if model.removeBackground && model.imageTarget == .jpeg {
-                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
-                        Label("JPEG can't keep the transparent background.", systemImage: "exclamationmark.triangle.fill")
-                            .font(Theme.Text.caption)
-                            .foregroundStyle(Theme.Palette.warning)
-                        Spacer(minLength: Theme.Space.sm)
-                        Button("Use PNG") {
-                            model.imageTarget = .png
-                            model.scheduleReplan()
-                        }
-                        .controlSize(.small)
+    private var videoCard: some View {
+        inspectorSection("Video → Format", systemImage: "film") {
+            FlowLayout(spacing: 6) {
+                ForEach([ConversionTarget.mp4, .mov, .mkv, .webm, .gif]) { target in
+                    formatPill(title: shortLabel(for: target), selected: model.videoTarget == target) {
+                        model.videoTarget = target
+                        model.scheduleReplan()
                     }
                 }
-
-                DisclosureGroup(isExpanded: $showMoreImageOptions) {
-                    Toggle("Keep photo info (location, camera)", isOn: $model.preserveMetadata)
-
-                    Picker("Resize", selection: $model.maxPixelSize) {
-                        Text("Original").tag(Int?.none)
-                        ForEach([3840, 2560, 1920, 1280, 800], id: \.self) { px in
-                            Text("\(px) px").tag(Int?.some(px))
-                        }
-                    }
-
-                    if model.imageTarget.supportsQuality {
-                        Picker("Target file size", selection: $model.imageTargetBytes) {
-                            Text("None").tag(UInt64?.none)
-                            Text("5 MB").tag(UInt64?.some(5_000_000))
-                            Text("2 MB").tag(UInt64?.some(2_000_000))
-                            Text("1 MB").tag(UInt64?.some(1_000_000))
-                            Text("500 KB").tag(UInt64?.some(500_000))
+                Menu {
+                    ForEach(ConversionTarget.audioTargets) { target in
+                        Button("Audio: \(target.displayName)") {
+                            model.videoTarget = target
+                            model.scheduleReplan()
                         }
                     }
                 } label: {
-                    Text("More image options")
+                    Text(model.videoTarget.family == .audio ? "Audio: \(shortLabel(for: model.videoTarget))" : "Audio only…")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                }
+                .menuStyle(.button)
+                .controlSize(.small)
+                .fixedSize()
+            }
+
+            if model.videoTarget.family == .video {
+                LabeledContent("Size limit") {
+                    Picker("", selection: $model.videoTargetBytes) {
+                        Text("None").tag(UInt64?.none)
+                        ForEach([10, 25, 50, 100], id: \.self) { mb in
+                            Text("≤ \(mb) MB").tag(UInt64?.some(UInt64(mb) * 1_000_000))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                }
+                .font(Theme.Text.caption)
+            }
+
+            note("Compatible streams remux instantly without quality loss.")
+        }
+    }
+
+    private var audioCard: some View {
+        inspectorSection("Audio → Format", systemImage: "waveform") {
+            FlowLayout(spacing: 6) {
+                ForEach(ConversionTarget.audioTargets) { target in
+                    formatPill(title: shortLabel(for: target), selected: model.audioTarget == target) {
+                        model.audioTarget = target
+                        model.scheduleReplan()
+                    }
                 }
             }
-        } header: {
-            Label(
-                model.hasKind(.image) && model.hasKind(.pdf) ? "Images and PDFs" : model.hasKind(.pdf) ? "PDF" : "Images",
-                systemImage: model.hasKind(.pdf) && !model.hasKind(.image) ? "doc.richtext" : "photo"
-            )
+        }
+    }
+
+    private var dataCard: some View {
+        inspectorSection("Data → Format", systemImage: "tablecells") {
+            FlowLayout(spacing: 6) {
+                ForEach(ConversionTarget.dataTargets) { target in
+                    formatPill(title: shortLabel(for: target), selected: model.dataTarget == target) {
+                        model.dataTarget = target
+                        model.scheduleReplan()
+                    }
+                }
+            }
+        }
+    }
+
+    private var documentCard: some View {
+        inspectorSection("Documents → Format", systemImage: "doc.text") {
+            FlowLayout(spacing: 6) {
+                ForEach(ConversionTarget.documentTargets) { target in
+                    formatPill(title: shortLabel(for: target), selected: model.documentTarget == target) {
+                        model.documentTarget = target
+                        model.scheduleReplan()
+                    }
+                }
+            }
+        }
+    }
+
+    private var qualityCard: some View {
+        inspectorSection("Quality", systemImage: "slider.horizontal.3") {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: Theme.Space.sm) {
+                    Slider(value: $model.quality, in: 0.3...1.0)
+                    Text("\(Int((model.quality * 100).rounded()))%")
+                        .font(.callout.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.primary)
+                        .frame(width: 42, alignment: .trailing)
+                }
+                HStack(spacing: 6) {
+                    ForEach([("Smaller", 0.65), ("Balanced", 0.85), ("Best", 0.95)], id: \.0) { label, val in
+                        Button(label) {
+                            model.quality = val
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                }
+            }
+        }
+    }
+
+    private var outputCard: some View {
+        inspectorSection("Where & Naming", systemImage: "folder") {
+            VStack(alignment: .leading, spacing: 8) {
+                Menu {
+                    Button {
+                        useFolder = false
+                    } label: {
+                        if !useFolder { Label("Next to originals", systemImage: "checkmark") }
+                        else { Text("Next to originals") }
+                    }
+                    Button("Choose Output Folder…") {
+                        model.chooseOutputFolderInteractively()
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "folder")
+                            .foregroundStyle(.secondary)
+                        Text(model.destinationDescription)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text("Change")
+                            .font(.caption)
+                            .foregroundStyle(Theme.Palette.accent)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Text("Suffix")
+                            .font(Theme.Text.caption)
+                            .foregroundStyle(.secondary)
+                        TextField("none (e.g. -web)", text: $model.suffix)
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.small)
+                            .onSubmit { model.scheduleReplan() }
+                    }
+                    HStack(spacing: 5) {
+                        ForEach([("None", ""), ("-web", "-web"), ("-small", "-small"), ("-copy", "-copy")], id: \.0) { title, value in
+                            Button(title) {
+                                model.suffix = value
+                                model.scheduleReplan()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                    }
+                }
+
+                if let example = model.outputExample {
+                    Text(example)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+    }
+
+    // MARK: Building blocks
+
+    private func inspectorSection<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            content()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Theme.Palette.surface.opacity(0.65),
+            in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                .strokeBorder(Theme.Palette.hairline.opacity(0.45), lineWidth: 1)
+        }
+    }
+
+    private func formatPill(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(selected ? .semibold : .medium))
+                .foregroundStyle(selected ? Color.white : Color.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    selected ? AnyShapeStyle(Theme.Palette.accent) : AnyShapeStyle(Color.primary.opacity(0.055)),
+                    in: Capsule()
+                )
+                .overlay {
+                    if !selected {
+                        Capsule()
+                            .strokeBorder(Theme.Palette.hairline.opacity(0.45), lineWidth: 1)
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func shortLabel(for target: ConversionTarget) -> String {
+        switch target {
+        case .m4a: "M4A"
+        case .ogg: "OGG"
+        case .mp4: "MP4"
+        case .mov: "MOV"
+        case .mkv: "MKV"
+        case .webm: "WebM"
+        case .text: "TXT"
+        default: target.displayName
         }
     }
 
     private var pdfNote: String {
         switch model.pdfMode {
         case .pages:
-            return model.hasKind(.image)
-                ? "Each PDF page becomes an image in the format above. Images use the same format."
-                : "Each page becomes a separate image in the format above."
+            return "Each page becomes an image."
         case .searchable:
-            return "Adds a selectable text layer with OCR. The result stays a PDF."
+            return "Embeds an invisible selectable OCR text layer."
         case .split:
-            return "Writes one PDF for each page."
+            return "Saves one separate PDF per page."
         case .compress:
-            return "Redraws images to make the file smaller. Text and vectors stay sharp."
+            return "Shrinks embedded images while keeping vector text sharp."
         case .merge:
-            return "Combines every PDF in the list into one document."
+            return "Combines every PDF in the queue into one file."
         case .tool, .text:
             return ""
         }
     }
-
-    // MARK: Units
 
     private var unsupportedKinds: [String] {
         var seen = Set<String>()
@@ -343,57 +481,5 @@ struct InspectorView: View {
             .font(Theme.Text.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: Bindings
-
-    private var imageBinding: Binding<ConversionTarget> {
-        Binding(
-            get: { model.imageTarget },
-            set: { newValue in
-                model.imageTarget = newValue
-                model.scheduleReplan()
-            }
-        )
-    }
-
-    private var audioBinding: Binding<ConversionTarget> {
-        Binding(
-            get: { model.audioTarget },
-            set: { newValue in
-                model.audioTarget = newValue
-                model.scheduleReplan()
-            }
-        )
-    }
-
-    private var videoBinding: Binding<ConversionTarget> {
-        Binding(
-            get: { model.videoTarget },
-            set: { newValue in
-                model.videoTarget = newValue
-                model.scheduleReplan()
-            }
-        )
-    }
-
-    private var documentBinding: Binding<ConversionTarget> {
-        Binding(
-            get: { model.documentTarget },
-            set: { newValue in
-                model.documentTarget = newValue
-                model.scheduleReplan()
-            }
-        )
-    }
-
-    private var dataBinding: Binding<ConversionTarget> {
-        Binding(
-            get: { model.dataTarget },
-            set: { newValue in
-                model.dataTarget = newValue
-                model.scheduleReplan()
-            }
-        )
     }
 }

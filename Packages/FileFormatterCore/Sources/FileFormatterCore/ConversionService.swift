@@ -9,12 +9,37 @@ public actor ConversionService {
 
     public init() {}
 
+    /// Releases heavy cached models and PDF documents once batch work goes idle.
+    public static func evictIdleCaches() {
+        ImageTools.evictCachedModel()
+        PDFPageRenderer.evictCache()
+        PDFTools.evictCache()
+    }
+
     public func makePlan(
         urls: [URL],
         targets: TargetRecipe,
         suffix: String,
         pdfMode: PDFMode = .pages,
         pdfTool: PDFToolRequest? = nil
+    ) async throws -> PlanResult {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.planSynchronously(
+                urls: urls,
+                targets: targets,
+                suffix: suffix,
+                pdfMode: pdfMode,
+                pdfTool: pdfTool
+            )
+        }.value
+    }
+
+    private nonisolated static func planSynchronously(
+        urls: [URL],
+        targets: TargetRecipe,
+        suffix: String,
+        pdfMode: PDFMode,
+        pdfTool: PDFToolRequest?
     ) throws -> PlanResult {
         let suffix = suffix.filter { $0 != "/" && $0 != ":" && $0 != "\0" }
         var seen = Set<String>()
@@ -27,33 +52,57 @@ public actor ConversionService {
         }
 
         var warnings: [String] = []
-        var grouped: [FileKind: [URL]] = [:]
+        let rustPlan: FileFormatterRust.Plan
+        do {
+            rustPlan = try FileFormatterRust.buildMixedPlan(
+                paths: ordered.map { $0.standardizedFileURL.path },
+                targets: FileFormatterRust.PlanTargets(
+                    image: targets.image.fileExtension,
+                    data: targets.data.fileExtension,
+                    document: targets.document.fileExtension,
+                    audio: targets.audio.fileExtension,
+                    video: targets.video.fileExtension
+                ),
+                suffix: suffix
+            )
+            warnings.append(contentsOf: rustPlan.warnings)
+        } catch FileFormatterRust.CoreError.EmptyBatch {
+            return PlanResult(
+                items: [],
+                warnings: ordered.map { "Skipped \($0.lastPathComponent): file not found" }
+            )
+        }
 
-        for url in ordered {
-            do {
-                let info = try FileFormatterRust.detectFile(path: url.standardizedFileURL.path)
-                grouped[Self.map(info.kind), default: []].append(url)
-            } catch {
-                warnings.append("Skipped \(url.lastPathComponent): \(error.localizedDescription)")
-            }
+        var rustByPath: [String: FileFormatterRust.PlanItem] = [:]
+        rustByPath.reserveCapacity(rustPlan.items.count)
+        for item in rustPlan.items {
+            let canonical = URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path
+            rustByPath[canonical] = item
         }
 
         var planned: [String: [ConversionItem]] = [:]
 
+        var mergedPaths = Set<String>()
         if pdfMode == .merge {
             // One output from many inputs: every PDF, plus images when the image target is PDF.
             let mergeKinds: Set<FileKind> = targets.image == .pdf ? [.pdf, .image] : [.pdf]
-            let sources = ordered.filter { url in
-                mergeKinds.contains { grouped[$0]?.contains(url) == true }
+            var sources: [URL] = []
+            var totalBytes: UInt64 = 0
+            for url in ordered {
+                let key = url.standardizedFileURL.path
+                if let rustItem = rustByPath[key], mergeKinds.contains(Self.map(rustItem.kind)) {
+                    sources.append(url)
+                    totalBytes += rustItem.byteSize
+                    mergedPaths.insert(key)
+                }
             }
             if let first = sources.first {
-                for kind in mergeKinds { grouped[kind] = nil }
                 let stem = first.deletingPathExtension().lastPathComponent
                 planned[first.standardizedFileURL.path] = [ConversionItem(
                     sourceURL: first,
                     displayName: sources.count == 1 ? first.lastPathComponent : "\(sources.count) files",
                     kind: .pdf,
-                    byteSize: sources.reduce(0) { $0 + fileSize($1) },
+                    byteSize: totalBytes,
                     outputName: "\(stem)-merged.pdf",
                     fidelity: .lossless,
                     note: "Merge \(sources.count) file(s) into one PDF",
@@ -63,99 +112,62 @@ public actor ConversionService {
             }
         }
 
-        for (kind, group) in grouped {
+        for url in ordered {
+            let key = url.standardizedFileURL.path
+            if mergedPaths.contains(key) { continue }
+            guard let item = rustByPath[key] else { continue }
+            let kind = Self.map(item.kind)
+
             if kind == .pdf {
-                for url in group {
-                    let key = url.standardizedFileURL.path
-                    if pdfMode != .pages {
-                        do {
-                            planned[key] = pdfMode == .split
-                                ? try pdfPageItems(url: url, target: .pdf, suffix: suffix, mode: .split)
-                                : [try wholePDFItem(url: url, suffix: suffix, mode: pdfMode, tool: pdfTool)]
-                        } catch {
-                            warnings.append("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
-                            planned[key] = [skippedItem(
-                                url: url,
-                                kind: kind,
-                                reason: error.localizedDescription
-                            )]
-                        }
-                        continue
-                    }
-                    guard targets.image.family == .image else {
-                        planned[key] = [skippedItem(
-                            url: url,
-                            kind: kind,
-                            reason: "Choose an image target for PDF pages"
-                        )]
-                        continue
-                    }
+                if pdfMode != .pages {
                     do {
-                        planned[key] = try pdfPageItems(
-                            url: url,
-                            target: targets.image,
-                            suffix: suffix,
-                            mode: .pages
-                        )
+                        planned[key] = pdfMode == .split
+                            ? try pdfPageItems(url: url, target: .pdf, suffix: suffix, mode: .split)
+                            : [try wholePDFItem(url: url, suffix: suffix, mode: pdfMode, tool: pdfTool)]
                     } catch {
                         warnings.append("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
-                        planned[key] = [skippedItem(
-                            url: url,
-                            kind: kind,
-                            reason: error.localizedDescription
-                        )]
+                        planned[key] = [skippedItem(url: url, kind: kind, byteSize: item.byteSize, reason: error.localizedDescription)]
                     }
+                    continue
+                }
+                guard targets.image.family == .image else {
+                    planned[key] = [skippedItem(url: url, kind: kind, byteSize: item.byteSize, reason: "Choose an image target for PDF pages")]
+                    continue
+                }
+                do {
+                    planned[key] = try pdfPageItems(url: url, target: targets.image, suffix: suffix, mode: .pages)
+                } catch {
+                    warnings.append("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
+                    planned[key] = [skippedItem(url: url, kind: kind, byteSize: item.byteSize, reason: error.localizedDescription)]
                 }
                 continue
             }
 
             guard let target = targets.target(for: kind) else {
-                for url in group {
-                    planned[url.standardizedFileURL.path] = [skippedItem(
-                        url: url,
-                        kind: kind,
-                        reason: "No target for \(kind.label) yet"
-                    )]
-                }
+                planned[key] = [skippedItem(
+                    url: url,
+                    kind: kind,
+                    byteSize: item.byteSize,
+                    reason: "No target for \(kind.label) yet"
+                )]
                 continue
             }
 
-            do {
-                let plan = try FileFormatterRust.buildPlan(
-                    paths: group.map { $0.standardizedFileURL.path },
-                    targetExtension: target.fileExtension,
-                    suffix: suffix
-                )
-                warnings.append(contentsOf: plan.warnings)
-
-                for item in plan.items {
-                    let sourceURL = URL(fileURLWithPath: item.sourcePath)
-                    let fidelity = Self.map(item.fidelity)
-                    let status: ItemStatus = fidelity == .unsupported
-                        ? .skipped("Unsupported for \(target.displayName)")
-                        : .pending
-                    planned[sourceURL.standardizedFileURL.path] = [ConversionItem(
-                        sourceURL: sourceURL,
-                        displayName: sourceURL.lastPathComponent,
-                        kind: Self.map(item.kind),
-                        byteSize: item.byteSize,
-                        outputName: item.outputName,
-                        fidelity: fidelity,
-                        note: item.note,
-                        status: status
-                    )]
-                }
-            } catch {
-                let reason = error.localizedDescription
-                for url in group {
-                    warnings.append("Could not plan \(url.lastPathComponent): \(reason)")
-                    planned[url.standardizedFileURL.path] = [skippedItem(
-                        url: url,
-                        kind: kind,
-                        reason: reason
-                    )]
-                }
-            }
+            let sourceURL = URL(fileURLWithPath: item.sourcePath)
+            let fidelity = Self.map(item.fidelity)
+            let status: ItemStatus = fidelity == .unsupported
+                ? .skipped("Unsupported for \(target.displayName)")
+                : .pending
+            planned[key] = [ConversionItem(
+                sourceURL: sourceURL,
+                displayName: sourceURL.lastPathComponent,
+                kind: kind,
+                byteSize: item.byteSize,
+                outputName: item.outputName,
+                fidelity: fidelity,
+                note: item.note,
+                status: status
+            )]
         }
 
         let items = ordered.flatMap { planned[$0.standardizedFileURL.path] ?? [] }
@@ -167,7 +179,7 @@ public actor ConversionService {
         urls: [URL],
         target: ConversionTarget,
         suffix: String
-    ) throws -> PlanResult {
+    ) async throws -> PlanResult {
         let recipe = TargetRecipe(
             image: target.family == .image ? target : .jpeg,
             data: target.family == .data ? target : .json,
@@ -175,7 +187,7 @@ public actor ConversionService {
             audio: target.family == .audio ? target : .mp3,
             video: target.family == .video ? target : .mp4
         )
-        return try makePlan(urls: urls, targets: recipe, suffix: suffix)
+        return try await makePlan(urls: urls, targets: recipe, suffix: suffix)
     }
 
     /// Plans the toolkit: images keep their own format, PDFs get one tool operation per document.
@@ -184,7 +196,18 @@ public actor ConversionService {
         imageEdit: ImageEdit?,
         pdfTool: PDFToolRequest?,
         suffix: String
-    ) throws -> PlanResult {
+    ) async throws -> PlanResult {
+        await Task.detached(priority: .userInitiated) {
+            Self.toolPlanSynchronously(urls: urls, imageEdit: imageEdit, pdfTool: pdfTool, suffix: suffix)
+        }.value
+    }
+
+    private nonisolated static func toolPlanSynchronously(
+        urls: [URL],
+        imageEdit: ImageEdit?,
+        pdfTool: PDFToolRequest?,
+        suffix: String
+    ) -> PlanResult {
         let suffix = suffix.filter { $0 != "/" && $0 != ":" && $0 != "\0" }
         var seen = Set<String>()
         let ordered = urls.compactMap { url -> URL? in
@@ -196,7 +219,8 @@ public actor ConversionService {
 
         for url in ordered {
             do {
-                let kind = Self.map(try FileFormatterRust.detectFile(path: url.standardizedFileURL.path).kind)
+                let info = try FileFormatterRust.detectFile(path: url.standardizedFileURL.path)
+                let kind = Self.map(info.kind)
                 if kind == .pdf, let pdfTool {
                     items.append(try wholePDFItem(
                         url: url,
@@ -216,7 +240,7 @@ public actor ConversionService {
                         sourceURL: url,
                         displayName: url.lastPathComponent,
                         kind: .image,
-                        byteSize: fileSize(url),
+                        byteSize: info.byteSize,
                         outputName: "\(stem)\(suffix).\(target.fileExtension)",
                         fidelity: lossless ? .lossless : .reencode,
                         note: Self.describe(imageEdit),
@@ -247,8 +271,10 @@ public actor ConversionService {
 
     public func convert(
         _ item: ConversionItem,
-        options: ConversionOptions
+        options: ConversionOptions,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> (url: URL, outputBytes: UInt64, extras: [URL]) {
+        try Task.checkCancellation()
         let scoped = item.sourceURL.startAccessingSecurityScopedResource()
         defer {
             if scoped { item.sourceURL.stopAccessingSecurityScopedResource() }
@@ -262,7 +288,7 @@ public actor ConversionService {
         let destination = uniqueDestination(for: item, in: options.outputDirectory)
         reserved.insert(destination.path)
         defer { reserved.remove(destination.path) }
-        let extras = try await Self.perform(item, options: options, destination: destination, media: media)
+        let extras = try await Self.perform(item, options: options, destination: destination, media: media, progress: progress)
 
         let values = try? destination.resourceValues(forKeys: [.fileSizeKey])
         let size = UInt64(values?.fileSize ?? 0)
@@ -274,82 +300,102 @@ public actor ConversionService {
         _ item: ConversionItem,
         options: ConversionOptions,
         destination: URL,
-        media: MediaConverter
+        media: MediaConverter,
+        progress: @escaping @Sendable (Double) -> Void
     ) async throws -> [URL] {
+        try Task.checkCancellation()
         var extras: [URL] = []
         switch (item.kind, options.target.family) {
         case (.pdf, _) where item.pdfMode == .text:
-            var tool = options.pdfTool ?? PDFToolRequest(kind: .text)
-            if options.pdfTool == nil, [.markdown, .text, .html].contains(options.target) {
-                tool.textTarget = options.target
+            try autoreleasepool {
+                var tool = options.pdfTool ?? PDFToolRequest(kind: .text)
+                if options.pdfTool == nil, [.markdown, .text, .html].contains(options.target) {
+                    tool.textTarget = options.target
+                }
+                try PDFTools.apply(tool, source: item.sourceURL, destination: destination)
             }
-            try PDFTools.apply(tool, source: item.sourceURL, destination: destination)
         case (.pdf, _) where item.pdfMode == .tool:
             guard let tool = options.pdfTool else {
                 throw ConversionError.unsupportedTarget("PDF tool")
             }
-            try PDFTools.apply(tool, source: item.sourceURL, destination: destination)
+            try autoreleasepool {
+                try PDFTools.apply(tool, source: item.sourceURL, destination: destination)
+            }
         case (.pdf, _) where item.pdfMode == .merge:
-            try PDFTools.merge(sources: item.mergeSources ?? [item.sourceURL], destination: destination)
+            try autoreleasepool {
+                try PDFTools.merge(sources: item.mergeSources ?? [item.sourceURL], destination: destination)
+            }
         case (.pdf, _) where item.pdfMode == .searchable:
-            try await searchablePDF(source: item.sourceURL, destination: destination)
+            try await searchablePDF(source: item.sourceURL, destination: destination, progress: progress)
         case (.pdf, _) where item.pdfMode == .split:
             guard let pageNumber = item.pageIndex else {
                 throw ConversionError.unsupportedTarget("PDF page")
             }
-            try PDFTools.extractPage(source: item.sourceURL, pageNumber: pageNumber, destination: destination)
+            try autoreleasepool {
+                try PDFTools.extractPage(source: item.sourceURL, pageNumber: pageNumber, destination: destination)
+            }
         case (.pdf, _) where item.pdfMode == .compress:
             // A compress level always sets a size cap; without one, keep the system filter's own quality.
-            try PDFTools.compress(
-                source: item.sourceURL,
-                destination: destination,
-                quality: options.maxPixelSize == nil ? nil : options.quality,
-                maxPixelSize: options.maxPixelSize,
-                targetBytes: options.targetBytes
-            )
-        case (.image, .image), (.image, .pdf):
-            if options.imageEdit != nil || options.removeBackground || options.maxPixelSize != nil || options.targetBytes != nil {
-                var (image, properties) = try ImageTools.load(item.sourceURL, maxPixelSize: options.maxPixelSize)
-                if let edit = options.imageEdit {
-                    image = try ImageTools.apply(edit, to: image)
-                    // Framing changed, so the original pixel dimensions no longer describe the output.
-                    properties[kCGImagePropertyPixelWidth] = image.width
-                    properties[kCGImagePropertyPixelHeight] = image.height
-                }
-                if options.removeBackground {
-                    image = try ImageTools.removeBackground(image, hdModel: options.backgroundModel)
-                }
-                try ImageTools.encode(
-                    image: image,
-                    destination: destination,
-                    target: options.target,
-                    quality: options.quality,
-                    properties: options.preserveMetadata ? properties : [:],
-                    targetBytes: options.targetBytes
-                )
-            } else {
-                try ImageConverter.convert(
+            try autoreleasepool {
+                try PDFTools.compress(
                     source: item.sourceURL,
                     destination: destination,
-                    target: options.target,
-                    quality: options.quality,
-                    preserveMetadata: options.preserveMetadata
+                    quality: options.maxPixelSize == nil ? nil : options.quality,
+                    maxPixelSize: options.maxPixelSize,
+                    targetBytes: options.targetBytes
                 )
+            }
+        case (.image, .image), (.image, .pdf):
+            try autoreleasepool {
+                if options.imageEdit != nil || options.removeBackground || options.maxPixelSize != nil || options.targetBytes != nil {
+                    var (image, properties) = try ImageTools.load(item.sourceURL, maxPixelSize: options.maxPixelSize)
+                    try Task.checkCancellation()
+                    if let edit = options.imageEdit {
+                        image = try ImageTools.apply(edit, to: image)
+                        // Framing changed, so the original pixel dimensions no longer describe the output.
+                        properties[kCGImagePropertyPixelWidth] = image.width
+                        properties[kCGImagePropertyPixelHeight] = image.height
+                    }
+                    if options.removeBackground {
+                        try Task.checkCancellation()
+                        image = try ImageTools.removeBackground(image, hdModel: options.backgroundModel)
+                    }
+                    try Task.checkCancellation()
+                    try ImageTools.encode(
+                        image: image,
+                        destination: destination,
+                        target: options.target,
+                        quality: options.quality,
+                        properties: options.preserveMetadata ? properties : [:],
+                        targetBytes: options.targetBytes
+                    )
+                } else {
+                    try ImageConverter.convert(
+                        source: item.sourceURL,
+                        destination: destination,
+                        target: options.target,
+                        quality: options.quality,
+                        preserveMetadata: options.preserveMetadata
+                    )
+                }
             }
         case (.pdf, .image):
             guard let pageNumber = item.pageIndex else {
                 throw ConversionError.unsupportedTarget("PDF page")
             }
-            let image = try PDFPageRenderer.render(
-                source: item.sourceURL,
-                pageNumber: pageNumber
-            )
-            try ImageConverter.encode(
-                image: image,
-                destination: destination,
-                target: options.target,
-                quality: options.quality
-            )
+            try autoreleasepool {
+                let image = try PDFPageRenderer.render(
+                    source: item.sourceURL,
+                    pageNumber: pageNumber
+                )
+                try Task.checkCancellation()
+                try ImageConverter.encode(
+                    image: image,
+                    destination: destination,
+                    target: options.target,
+                    quality: options.quality
+                )
+            }
         case (.video, .image) where options.target == .gif:
             try await convertMedia(
                 media,
@@ -357,7 +403,9 @@ public actor ConversionService {
                 destination: destination,
                 target: options.target,
                 quality: options.quality,
-                targetBytes: nil
+                targetBytes: nil,
+                background: options.backgroundPriority,
+                progress: progress
             )
         case (.audio, .audio), (.video, .video), (.video, .audio):
             try await convertMedia(
@@ -366,7 +414,9 @@ public actor ConversionService {
                 destination: destination,
                 target: options.target,
                 quality: options.quality,
-                targetBytes: options.targetBytes
+                targetBytes: options.targetBytes,
+                background: options.backgroundPriority,
+                progress: progress
             )
         case (.data, .data):
             try convertData(
@@ -389,6 +439,20 @@ public actor ConversionService {
     }
 
     public func undo(_ summary: RunSummary) async -> (removed: Int, failed: Int) {
+        var scopedFolder: URL?
+        if let bookmark = summary.outputFolderBookmark {
+            var stale = false
+            if let resolved = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ), resolved.startAccessingSecurityScopedResource() {
+                scopedFolder = resolved
+            }
+        }
+        defer { scopedFolder?.stopAccessingSecurityScopedResource() }
+
         if let renames = summary.renames {
             let result = Renamer.revert(renames)
             return (result.restored, result.failed)
@@ -416,7 +480,7 @@ public actor ConversionService {
         return (removed, failed)
     }
 
-    private func pdfPageItems(
+    private nonisolated static func pdfPageItems(
         url: URL,
         target: ConversionTarget,
         suffix: String,
@@ -462,7 +526,9 @@ public actor ConversionService {
         destination: URL,
         target: ConversionTarget,
         quality: Double,
-        targetBytes: UInt64?
+        targetBytes: UInt64?,
+        background: Bool,
+        progress: @escaping @Sendable (Double) -> Void
     ) async throws {
         guard let format = MediaTarget(rawValue: target.rawValue) else {
             throw ConversionError.unsupportedTarget(target.displayName)
@@ -479,15 +545,20 @@ public actor ConversionService {
                 destination: temporary,
                 format: format,
                 quality: quality,
-                targetBytes: targetBytes
+                targetBytes: targetBytes,
+                background: background,
+                progress: progress
             )
+        } catch let error as MediaError {
+            if case .cancelled = error { throw CancellationError() }
+            throw ConversionError.core(error.localizedDescription)
         } catch {
             throw ConversionError.core(error.localizedDescription)
         }
         try ImageConverter.install(temporary: temporary, at: destination)
     }
 
-    private func wholePDFItem(
+    private nonisolated static func wholePDFItem(
         url: URL,
         suffix: String,
         mode: PDFMode,
@@ -549,7 +620,11 @@ public actor ConversionService {
         )
     }
 
-    private static func searchablePDF(source: URL, destination: URL) async throws {
+    private static func searchablePDF(
+        source: URL,
+        destination: URL,
+        progress: @escaping @Sendable (Double) -> Void
+    ) async throws {
         let directory = destination.deletingLastPathComponent()
         let temporary = directory
             .appendingPathComponent(".fileformatter-\(UUID().uuidString)")
@@ -559,8 +634,11 @@ public actor ConversionService {
         do {
             try OCRService().makeSearchablePDF(
                 source: source,
-                destination: temporary
+                destination: temporary,
+                progress: progress
             )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw ConversionError.core(error.localizedDescription)
         }
@@ -616,12 +694,12 @@ public actor ConversionService {
         return !companionExisted && FileManager.default.fileExists(atPath: companion.path) ? [companion] : []
     }
 
-    private func skippedItem(url: URL, kind: FileKind, reason: String) -> ConversionItem {
+    private nonisolated static func skippedItem(url: URL, kind: FileKind, byteSize: UInt64? = nil, reason: String) -> ConversionItem {
         ConversionItem(
             sourceURL: url,
             displayName: url.lastPathComponent,
             kind: kind,
-            byteSize: fileSize(url),
+            byteSize: byteSize ?? fileSize(url),
             outputName: url.lastPathComponent,
             fidelity: .unsupported,
             note: reason,
@@ -629,7 +707,7 @@ public actor ConversionService {
         )
     }
 
-    private func fileSize(_ url: URL) -> UInt64 {
+    private nonisolated static func fileSize(_ url: URL) -> UInt64 {
         let values = try? url.resourceValues(forKeys: [.fileSizeKey])
         return UInt64(values?.fileSize ?? 0)
     }

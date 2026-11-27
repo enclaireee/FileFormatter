@@ -7,9 +7,16 @@ struct QueueView: View {
     @Bindable var model: AppModel
     @State private var previewURL: URL?
     @State private var search = ""
+    @State private var showSearch = false
+    @State private var hoveredID: UUID?
+    @FocusState private var searchFocused: Bool
 
     private var query: String {
         search.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var shouldShowSearch: Bool {
+        showSearch || !search.isEmpty || model.items.count > 6
     }
 
     private var filteredItems: [ConversionItem] {
@@ -32,9 +39,11 @@ struct QueueView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            HStack(spacing: 0) {
-                searchBar
-                Spacer(minLength: 0)
+            if shouldShowSearch {
+                HStack(spacing: 0) {
+                    searchBar
+                    Spacer(minLength: 0)
+                }
             }
             if model.isRunning {
                 progress
@@ -44,6 +53,16 @@ struct QueueView: View {
             }
             table
         }
+        .background {
+            Button("") {
+                showSearch = true
+                searchFocused = true
+            }
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 
     private var searchBar: some View {
@@ -52,13 +71,17 @@ struct QueueView: View {
                 .font(.callout)
                 .foregroundStyle(.tertiary)
 
-            TextField("Filter files", text: $search)
+            TextField("Filter files (⌘F)", text: $search)
                 .textFieldStyle(.plain)
                 .font(Theme.Text.body)
+                .focused($searchFocused)
 
-            if !search.isEmpty {
+            if !search.isEmpty || (showSearch && model.items.count <= 6) {
                 Button {
                     search = ""
+                    if model.items.count <= 6 {
+                        showSearch = false
+                    }
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.tertiary)
@@ -85,12 +108,25 @@ struct QueueView: View {
     // MARK: Header
 
     private var header: some View {
-        PageHeader("Conversion queue", subtitle: subtitle) {
+        PageHeader("Queue", subtitle: subtitle) {
             HStack(spacing: Theme.Space.sm) {
                 if model.isPlanning || model.isQuickRunning {
                     ProgressView()
                         .controlSize(.small)
                         .help(model.isPlanning ? "Reading the files…" : "Running a quick action…")
+                }
+                if !shouldShowSearch {
+                    Button {
+                        showSearch = true
+                        searchFocused = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Filter files (⌘F)")
                 }
                 quickActions
             }
@@ -108,10 +144,10 @@ struct QueueView: View {
         } else if model.isQuickRunning {
             parts.append("Running quick action")
         } else {
-            let pending = model.count { $0 == .pending }
-            let completed = model.count { $0 == .completed }
-            let skipped = model.count { if case .skipped = $0 { true } else { false } }
-            let failed = model.count { if case .failed = $0 { true } else { false } }
+            let pending = model.pendingCount
+            let completed = model.finishedCount
+            let skipped = model.skippedCount
+            let failed = model.failedCount
 
             if pending > 0, pending < count { parts.append("\(pending) ready") }
             if completed > 0 { parts.append("\(completed) done") }
@@ -240,29 +276,49 @@ struct QueueView: View {
             .width(min: 190, ideal: 230)
 
             TableColumn("Becomes") { item in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.outputName)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .foregroundStyle(item.fidelity == .unsupported ? .secondary : .primary)
-                        .help(item.outputName)
-                    if let line = secondaryLine(for: item) {
-                        Text(line)
-                            .font(Theme.Text.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .help(item.fidelity.explanation)
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.outputName)
+                            .font(.body.weight(.medium))
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(item.fidelity == .unsupported ? .secondary : .primary)
+                            .help(item.outputName)
+                        if let line = secondaryLine(for: item) {
+                            Text(line)
+                                .font(Theme.Text.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .help(item.fidelity.explanation)
+                        }
                     }
                 }
                 .padding(.vertical, 1)
             }
-            .width(min: 150, ideal: 190)
+            .width(min: 170, ideal: 215)
 
             TableColumn("Status") { item in
-                StatusBadge(status: item.status)
+                HStack(spacing: 6) {
+                    StatusBadge(status: item.status, progress: item.progress)
+                    Spacer(minLength: 0)
+                    if hoveredID == item.id {
+                        rowHoverActions(for: item)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside {
+                        hoveredID = item.id
+                    } else if hoveredID == item.id {
+                        hoveredID = nil
+                    }
+                }
             }
-            .width(min: 90, ideal: 100)
+            .width(min: 120, ideal: 155)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: false))
         .onDeleteCommand { model.removeSelected() }
@@ -271,7 +327,7 @@ struct QueueView: View {
         } primaryAction: { ids in
             for url in urls(for: ids) { NSWorkspace.shared.open(url) }
         }
-        .quickLookPreview($previewURL, in: model.items.map { $0.outputURL ?? $0.sourceURL })
+        .quickLookPreview($previewURL, in: previewURL == nil ? [] : model.items.map { $0.outputURL ?? $0.sourceURL })
         .onKeyPress(.space) {
             guard let id = model.selection.first,
                   let item = model.items.first(where: { $0.id == id }) else { return .ignored }
@@ -315,6 +371,49 @@ struct QueueView: View {
             Divider()
             Button("Remove", role: .destructive) { model.remove(ids) }
                 .disabled(model.isRunning)
+        }
+    }
+
+    @ViewBuilder
+    private func rowHoverActions(for item: ConversionItem) -> some View {
+        HStack(spacing: 4) {
+            Button {
+                previewURL = item.outputURL ?? item.sourceURL
+            } label: {
+                Image(systemName: "eye")
+                    .font(.caption)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Quick Look (Space)")
+
+            Button {
+                model.reveal(item)
+            } label: {
+                Image(systemName: "folder")
+                    .font(.caption)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Show in Finder")
+
+            if !model.isRunning {
+                Button {
+                    model.remove([item.id])
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.semibold))
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Remove from queue")
+            }
         }
     }
 

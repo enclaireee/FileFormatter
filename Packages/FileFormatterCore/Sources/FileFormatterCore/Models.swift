@@ -240,6 +240,7 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
     public var fidelity: FidelityLevel
     public var note: String?
     public var status: ItemStatus
+    public var progress: Double?
     public var outputURL: URL?
     public let pageIndex: Int?
     public let pageCount: Int?
@@ -259,6 +260,7 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         fidelity: FidelityLevel,
         note: String? = nil,
         status: ItemStatus = .pending,
+        progress: Double? = nil,
         outputURL: URL? = nil,
         pageIndex: Int? = nil,
         pageCount: Int? = nil,
@@ -275,6 +277,7 @@ public struct ConversionItem: Identifiable, Sendable, Equatable {
         self.fidelity = fidelity
         self.note = note
         self.status = status
+        self.progress = progress
         self.outputURL = outputURL
         self.pageIndex = pageIndex
         self.pageCount = pageCount
@@ -513,6 +516,8 @@ public struct ConversionOptions: Sendable {
     public var pdfTool: PDFToolRequest?
     /// Where outputs go; nil writes next to the source.
     public var outputDirectory: URL?
+    /// True for background watch-folder conversions, lowering child process priority and preferring E-cores.
+    public var backgroundPriority: Bool
 
     public init(
         target: ConversionTarget,
@@ -525,7 +530,8 @@ public struct ConversionOptions: Sendable {
         backgroundModel: URL? = nil,
         imageEdit: ImageEdit? = nil,
         pdfTool: PDFToolRequest? = nil,
-        outputDirectory: URL? = nil
+        outputDirectory: URL? = nil,
+        backgroundPriority: Bool = false
     ) {
         self.target = target
         self.quality = quality
@@ -538,6 +544,7 @@ public struct ConversionOptions: Sendable {
         self.imageEdit = imageEdit
         self.pdfTool = pdfTool
         self.outputDirectory = outputDirectory
+        self.backgroundPriority = backgroundPriority
     }
 }
 
@@ -557,6 +564,8 @@ public struct RunSummary: Identifiable, Codable, Sendable {
     /// Inode of each output when it was written, parallel to `outputs`. Undo only trashes files that still match.
     /// Nil in journals written before 0.6.0.
     public var fileNumbers: [Int?]?
+    /// Security-scoped bookmark of the output folder used for this run, so Undo still works after switching folders.
+    public var outputFolderBookmark: Data?
 
     /// The file's inode, read uncached.
     public static func fileNumber(_ url: URL) -> Int? {
@@ -575,7 +584,8 @@ public struct RunSummary: Identifiable, Codable, Sendable {
         outputBytes: UInt64,
         undone: Bool = false,
         renames: [[URL]]? = nil,
-        fileNumbers: [Int?]? = nil
+        fileNumbers: [Int?]? = nil,
+        outputFolderBookmark: Data? = nil
     ) {
         self.id = id
         self.date = date
@@ -589,6 +599,7 @@ public struct RunSummary: Identifiable, Codable, Sendable {
         self.undone = undone
         self.fileNumbers = fileNumbers
         self.renames = renames
+        self.outputFolderBookmark = outputFolderBookmark
     }
 
     public var bytesSaved: Int64 { Int64(inputBytes) - Int64(outputBytes) }

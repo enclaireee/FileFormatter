@@ -17,7 +17,10 @@ enum WebPEncoder {
         let byteCount = bytesPerRow * height
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
         defer { buffer.deallocate() }
-        memset(buffer, 0, byteCount)
+        let hasAlpha = ![CGImageAlphaInfo.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo)
+        if hasAlpha {
+            memset(buffer, 0, byteCount)
+        }
 
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(
@@ -38,7 +41,7 @@ enum WebPEncoder {
 
         let pixels = buffer.assumingMemoryBound(to: UInt8.self)
         // Opaque images draw with alpha 255 everywhere, so there is nothing to undo.
-        if ![.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo) {
+        if hasAlpha {
             var bitmap = vImage_Buffer(data: buffer, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: bytesPerRow)
             vImageUnpremultiplyData_RGBA8888(&bitmap, &bitmap, vImage_Flags(kvImageNoFlags))
         }

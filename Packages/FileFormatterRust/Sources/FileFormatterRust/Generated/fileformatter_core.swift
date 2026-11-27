@@ -827,6 +827,72 @@ public func FfiConverterTypePlanItem_lower(_ value: PlanItem) -> RustBuffer {
 }
 
 
+public struct PlanTargets: Equatable, Hashable {
+    public var image: String
+    public var data: String
+    public var document: String
+    public var audio: String
+    public var video: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(image: String, data: String, document: String, audio: String, video: String) {
+        self.image = image
+        self.data = data
+        self.document = document
+        self.audio = audio
+        self.video = video
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PlanTargets: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlanTargets: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlanTargets {
+        return
+            try PlanTargets(
+                image: FfiConverterString.read(from: &buf), 
+                data: FfiConverterString.read(from: &buf), 
+                document: FfiConverterString.read(from: &buf), 
+                audio: FfiConverterString.read(from: &buf), 
+                video: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PlanTargets, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.image, into: &buf)
+        FfiConverterString.write(value.data, into: &buf)
+        FfiConverterString.write(value.document, into: &buf)
+        FfiConverterString.write(value.audio, into: &buf)
+        FfiConverterString.write(value.video, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlanTargets_lift(_ buf: RustBuffer) throws -> PlanTargets {
+    return try FfiConverterTypePlanTargets.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlanTargets_lower(_ value: PlanTargets) -> RustBuffer {
+    return FfiConverterTypePlanTargets.lower(value)
+}
+
+
 public 
 enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -1255,6 +1321,16 @@ fileprivate struct FfiConverterSequenceTypePlanItem: FfiConverterRustBuffer {
         return seq
     }
 }
+public func buildMixedPlan(paths: [String], targets: PlanTargets, suffix: String)throws  -> Plan  {
+    return try  FfiConverterTypePlan_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_fileformatter_core_fn_func_build_mixed_plan(
+        FfiConverterSequenceString.lower(paths),
+        FfiConverterTypePlanTargets_lower(targets),
+        FfiConverterString.lower(suffix),uniffiCallStatus
+    )
+})
+}
 public func buildPlan(paths: [String], targetExtension: String, suffix: String)throws  -> Plan  {
     return try  FfiConverterTypePlan_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -1329,6 +1405,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_fileformatter_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_fileformatter_core_checksum_func_build_mixed_plan() != 20034) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_fileformatter_core_checksum_func_build_plan() != 46157) {
         return InitializationResult.apiChecksumMismatch

@@ -21,12 +21,17 @@ public actor DuplicateService {
     public init() {}
 
     public func scan(folder: URL) async throws -> [DuplicateSet] {
+        try Task.checkCancellation()
         let paths = await Task.detached(priority: .userInitiated) {
             Self.enumerateFiles(in: folder)
         }.value
 
+        try Task.checkCancellation()
         guard paths.count > 1 else { return [] }
-        let groups = FileFormatterRust.findDuplicates(paths: paths)
+        let groups = await Task.detached(priority: .userInitiated) {
+            FileFormatterRust.findDuplicates(paths: paths)
+        }.value
+        try Task.checkCancellation()
         return groups
             .map { group in
                 DuplicateSet(
@@ -39,9 +44,14 @@ public actor DuplicateService {
     }
 
     public func trashExtras(in set: DuplicateSet, keeping keep: URL) async -> (trashed: Int, failed: Int) {
+        let targets = set.paths.filter { $0.standardizedFileURL != keep.standardizedFileURL }
+        return await trash(urls: targets)
+    }
+
+    public func trash(urls: [URL]) async -> (trashed: Int, failed: Int) {
         var trashed = 0
         var failed = 0
-        for path in set.paths where path.standardizedFileURL != keep.standardizedFileURL {
+        for path in urls {
             do {
                 var resulting: NSURL?
                 try FileManager.default.trashItem(at: path, resultingItemURL: &resulting)

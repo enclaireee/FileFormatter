@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -10,42 +11,137 @@ struct WatchRule: Identifiable, Codable, Hashable, Sendable {
     var presetID: String
     var isEnabled: Bool = true
     var lastEvent: Date?
+    var folderBookmark: Data? = nil
+
+    func resolvedFolderURL() -> (url: URL, scoped: Bool) {
+        if let folderBookmark {
+            var stale = false
+            if let resolved = try? URL(
+                resolvingBookmarkData: folderBookmark,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) {
+                let scoped = resolved.startAccessingSecurityScopedResource()
+                return (resolved, scoped)
+            }
+        }
+        return (URL(fileURLWithPath: folderPath, isDirectory: true), false)
+    }
+}
+
+private final class FSEventBox: @unchecked Sendable {
+    weak var service: WatchService?
+    let ruleID: UUID
+
+    init(service: WatchService, ruleID: UUID) {
+        self.service = service
+        self.ruleID = ruleID
+    }
 }
 
 actor WatchService {
-    private var sources: [UUID: DispatchSourceFileSystemObject] = [:]
+    private var streams: [UUID: FSEventStreamRef] = [:]
+    private var scopedFolders: [UUID: URL] = [:]
     private var rules: [UUID: WatchRule] = [:]
-    // ponytail: last handled stamp per path, so edits replace an entry instead of adding one. Grows only with
-    // distinct files ever dropped in; prune missing paths if a watch folder ever sees millions.
     private var seen: [String: String] = [:]
+    /// Outputs written by watched runs themselves, preventing self-triggering conversion loops.
+    private var ownOutputs: [String: String] = [:]
+    private var pendingPaths: [UUID: Set<String>] = [:]
+    private var drainTasks: [UUID: Task<Void, Never>] = [:]
     private var handler: (@Sendable (WatchRule, URL) async -> Void)?
 
     func setHandler(_ handler: @escaping @Sendable (WatchRule, URL) async -> Void) {
         self.handler = handler
     }
 
+    func recordGeneratedOutputs(_ urls: [URL]) {
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            let stamp = fileStamp(url)
+            ownOutputs[path] = stamp
+            seen[path] = stamp
+        }
+        if ownOutputs.count > 4_096 {
+            ownOutputs.removeAll(keepingCapacity: true)
+        }
+    }
+
     func start(_ rule: WatchRule) {
         guard rule.isEnabled else { return }
         stop(rule.id)
-        rules[rule.id] = rule
+        var updatedRule = rule
+        let (folderURL, scoped) = rule.resolvedFolderURL()
+        if scoped {
+            scopedFolders[rule.id] = folderURL
+        }
+        let path = folderURL.standardizedFileURL.path
+        updatedRule.folderPath = path
+        rules[rule.id] = updatedRule
 
-        let descriptor = open(rule.folderPath, O_EVTONLY)
-        guard descriptor >= 0 else { return }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            return
+        }
 
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: descriptor,
-            eventMask: [.write, .rename, .delete, .attrib],
-            queue: .global(qos: .utility)
+        let box = FSEventBox(service: self, ruleID: rule.id)
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passRetained(box).toOpaque(),
+            retain: nil,
+            release: { info in
+                guard let info else { return }
+                Unmanaged<FSEventBox>.fromOpaque(info).release()
+            },
+            copyDescription: nil
         )
-        source.setEventHandler { [weak self] in
-            guard let self else { return }
-            Task { await self.handle(ruleID: rule.id) }
+
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagFileEvents
+                | kFSEventStreamCreateFlagUseCFTypes
+                | kFSEventStreamCreateFlagIgnoreSelf
+        )
+
+        let callback: FSEventStreamCallback = { _, clientInfo, numEvents, eventPaths, eventFlags, _ in
+            guard let clientInfo else { return }
+            let box = Unmanaged<FSEventBox>.fromOpaque(clientInfo).takeUnretainedValue()
+            guard let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] else { return }
+            let flagsBuffer = UnsafeBufferPointer(start: eventFlags, count: numEvents)
+            var candidates: [String] = []
+            for i in 0..<min(paths.count, flagsBuffer.count) {
+                let flag = flagsBuffer[i]
+                let removed = (flag & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved)) != 0
+                let isDirectory = (flag & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir)) != 0
+                if removed || isDirectory { continue }
+                let candidate = paths[i]
+                let name = (candidate as NSString).lastPathComponent
+                if name.hasPrefix(".") { continue }
+                candidates.append(candidate)
+            }
+            guard !candidates.isEmpty, let service = box.service else { return }
+            let ruleID = box.ruleID
+            Task { await service.enqueue(ruleID: ruleID, paths: candidates) }
         }
-        source.setCancelHandler {
-            close(descriptor)
+
+        guard let stream = FSEventStreamCreate(
+            nil,
+            callback,
+            &context,
+            [path] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.7,
+            flags
+        ) else {
+            return
         }
-        sources[rule.id] = source
-        source.resume()
+
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.global(qos: .utility))
+        if FSEventStreamStart(stream) {
+            streams[rule.id] = stream
+        } else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
     }
 
     func startAll(_ rules: [WatchRule]) {
@@ -53,37 +149,77 @@ actor WatchService {
     }
 
     func stop(_ id: UUID) {
-        sources[id]?.cancel()
-        sources[id] = nil
+        drainTasks[id]?.cancel()
+        drainTasks[id] = nil
+        pendingPaths[id] = nil
+        if let stream = streams.removeValue(forKey: id) {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
+        if let scoped = scopedFolders.removeValue(forKey: id) {
+            scoped.stopAccessingSecurityScopedResource()
+        }
         rules[id] = nil
     }
 
     func stopAll() {
-        for id in sources.keys { stop(id) }
+        for id in Array(streams.keys) { stop(id) }
     }
 
     func scanExisting(_ rule: WatchRule) async -> [URL] {
-        await files(in: rule, since: .distantPast)
+        await Task.detached(priority: .utility) {
+            Self.filesSynchronously(folderPath: rule.folderPath, since: .distantPast)
+        }.value
     }
 
-    private func handle(ruleID: UUID) async {
-        guard let rule = rules[ruleID] else { return }
-        try? await Task.sleep(for: .milliseconds(900))
-        let candidates = await files(in: rule, since: rule.lastEvent ?? Date().addingTimeInterval(-30))
-        for url in candidates {
-            let stamp = fileStamp(url)
-            if seen[url.path] == stamp { continue }
-            if await isStable(url) {
-                seen[url.path] = stamp
-                await handler?(rule, url)
-            }
+    fileprivate func enqueue(ruleID: UUID, paths: [String]) {
+        guard rules[ruleID] != nil else { return }
+        pendingPaths[ruleID, default: []].formUnion(paths)
+        guard drainTasks[ruleID] == nil else { return }
+        drainTasks[ruleID] = Task { [weak self] in
+            await self?.drain(ruleID: ruleID)
         }
     }
 
-    private func files(in rule: WatchRule, since cutoff: Date) async -> [URL] {
-        await Task.detached(priority: .utility) {
-            Self.filesSynchronously(folderPath: rule.folderPath, since: cutoff)
-        }.value
+    private func drain(ruleID: UUID) async {
+        defer { drainTasks[ruleID] = nil }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled, let rule = rules[ruleID] else { return }
+            guard let batch = pendingPaths.removeValue(forKey: ruleID), !batch.isEmpty else { break }
+
+            let presetSuffix = Preset.builtIn.first(where: { $0.id == rule.presetID })?.suffix ?? ""
+            for rawPath in batch.sorted() {
+                guard !Task.isCancelled, rules[ruleID] != nil else { return }
+                let url = URL(fileURLWithPath: rawPath).standardizedFileURL
+                let path = url.path
+                let name = url.lastPathComponent
+                if name.hasPrefix(".") { continue }
+
+                let stem = url.deletingPathExtension().lastPathComponent
+                if stem.hasSuffix("-converted")
+                    || (!presetSuffix.isEmpty && stem.hasSuffix(presetSuffix)) {
+                    continue
+                }
+
+                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                      values.isRegularFile == true,
+                      values.isSymbolicLink != true else { continue }
+
+                let stamp = fileStamp(url)
+                if ownOutputs[path] == stamp || seen[path] == stamp { continue }
+                if await isStable(url) {
+                    let finalStamp = fileStamp(url)
+                    if ownOutputs[path] == finalStamp || seen[path] == finalStamp { continue }
+                    seen[path] = finalStamp
+                    await handler?(rule, url)
+                }
+            }
+            if seen.count > 8_192 {
+                seen = seen.filter { FileManager.default.fileExists(atPath: $0.key) }
+            }
+        }
     }
 
     private nonisolated static func filesSynchronously(folderPath: String, since cutoff: Date) -> [URL] {
@@ -108,7 +244,8 @@ actor WatchService {
 
     private func isStable(_ url: URL) async -> Bool {
         let first = fileStamp(url)
-        try? await Task.sleep(for: .milliseconds(700))
+        try? await Task.sleep(for: .milliseconds(550))
+        guard !Task.isCancelled, FileManager.default.fileExists(atPath: url.path) else { return false }
         return first == fileStamp(url)
     }
 
@@ -121,6 +258,8 @@ actor WatchService {
 struct WatchFoldersView: View {
     @Bindable var model: AppModel
     @State private var showImporter = false
+    @State private var missingIDs: Set<UUID> = []
+    @State private var isDropTargeted = false
 
     private var activeCount: Int {
         model.watchRules.filter(\.isEnabled).count
@@ -163,6 +302,28 @@ struct WatchFoldersView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                    .strokeBorder(Theme.Palette.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .padding(Theme.Space.md)
+                    .allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            var added = false
+            for url in urls {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    model.addWatch(folder: url, presetID: "web-images")
+                    added = true
+                }
+            }
+            return added
+        } isTargeted: { isDropTargeted = $0 }
+        .task(id: model.watchRules) {
+            await refreshExistence()
+        }
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.folder],
@@ -174,9 +335,17 @@ struct WatchFoldersView: View {
         }
     }
 
+    private func refreshExistence() async {
+        let snapshot = model.watchRules
+        let missing = await Task.detached(priority: .utility) {
+            Set(snapshot.filter { !FileManager.default.fileExists(atPath: $0.folderPath) }.map(\.id))
+        }.value
+        missingIDs = missing
+    }
+
     private func ruleRow(_ rule: Binding<WatchRule>) -> some View {
         let value = rule.wrappedValue
-        let exists = FileManager.default.fileExists(atPath: value.folderPath)
+        let exists = !missingIDs.contains(value.id)
 
         return HStack(alignment: .top, spacing: Theme.Space.md) {
             IconTile(

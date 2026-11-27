@@ -29,11 +29,24 @@ struct FileFormatterApp: App {
         .defaultSize(width: 1_200, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Add Files or Folders…") {
+                Button("Add Files…") {
                     model.showImporter = true
                 }
                 .keyboardShortcut("o", modifiers: .command)
-                .disabled(model.isRunning)
+                .disabled(model.isRunning && model.pdfMode == .merge)
+
+                Button("Add Folder…") {
+                    model.showFolderImporter = true
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(model.isRunning && model.pdfMode == .merge)
+            }
+            CommandGroup(after: .pasteboard) {
+                Button("Paste Files or Screenshot") {
+                    model.pasteFromClipboard()
+                }
+                .keyboardShortcut("v", modifiers: .command)
+                .disabled(model.isRunning && model.pdfMode == .merge)
             }
             CommandMenu("Convert") {
                 Button("Convert Files") {
@@ -47,6 +60,18 @@ struct FileFormatterApp: App {
                 }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(!model.isBusy)
+
+                Divider()
+
+                Menu("Apply Preset") {
+                    ForEach(Array(Preset.builtIn.prefix(6).enumerated()), id: \.element.id) { idx, preset in
+                        Button(preset.name) {
+                            model.apply(preset)
+                        }
+                        .keyboardShortcut(KeyEquivalent(Character("\(idx + 1)")), modifiers: .command)
+                        .disabled(model.isRunning)
+                    }
+                }
 
                 Divider()
 

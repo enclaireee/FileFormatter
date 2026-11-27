@@ -41,6 +41,7 @@ public actor MediaConverter {
         format: MediaTarget,
         quality: Double,
         targetBytes: UInt64? = nil,
+        background: Bool = false,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws {
         guard let ffmpeg = locator.ffmpegURL else {
@@ -84,8 +85,10 @@ public actor MediaConverter {
                     quality: quality,
                     targetBytes: targetBytes,
                     duration: duration,
-                    streams: streams
+                    streams: streams,
+                    background: background
                 ),
+                qualityOfService: background ? .utility : .userInitiated,
                 onStdoutLine: lineHandler
             )
             do {
@@ -142,7 +145,8 @@ public actor MediaConverter {
         quality: Double,
         targetBytes: UInt64? = nil,
         duration: Double? = nil,
-        streams: [MediaStreamInfo]? = nil
+        streams: [MediaStreamInfo]? = nil,
+        background: Bool = false
     ) -> [String] {
         // Without a known duration a size target can't become a bitrate, so it is ignored.
         let sizeTarget: (bytes: UInt64, duration: Double)? = {
@@ -220,11 +224,15 @@ public actor MediaConverter {
             }
             let h264Rate = videoKbps.map {
                 ["-b:v", "\($0)k", "-maxrate", "\(Int(Double($0) * 1.2))k", "-bufsize", "\($0 * 2)k"]
-            } ?? ["-b:v", "4M"]
+            } ?? ["-q:v", "\(videoToolboxQuality(quality))"]
 
             switch format {
             case .mp4, .mov, .mkv:
-                arguments += ["-c:v", "h264_videotoolbox", "-allow_sw", "1"] + h264Rate + [
+                var vArgs = ["-c:v", "h264_videotoolbox", "-allow_sw", "1"]
+                if background {
+                    vArgs += ["-power_efficient", "1"]
+                }
+                arguments += vArgs + h264Rate + [
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac_at",
                     "-b:a", "\(sizeTarget == nil ? audioBitrate(quality) : (videoKbps != nil && sizeTarget!.bytes <= 25_000_000 ? 96 : 128))k"
@@ -234,7 +242,7 @@ public actor MediaConverter {
                 }
             case .webm:
                 arguments += ["-c:v", "libvpx-vp9", "-row-mt", "1", "-deadline", "good", "-cpu-used", "4"]
-                arguments += videoKbps.map { ["-b:v", "\($0)k"] } ?? ["-crf", "32", "-b:v", "0"]
+                arguments += videoKbps.map { ["-b:v", "\($0)k"] } ?? ["-crf", "\(vp9CRF(quality))", "-b:v", "0"]
                 arguments += [
                     "-pix_fmt", "yuv420p",
                     "-c:a", "libopus",
@@ -247,6 +255,18 @@ public actor MediaConverter {
 
         arguments.append(destination.path)
         return arguments
+    }
+
+    private nonisolated static func videoToolboxQuality(_ quality: Double) -> Int {
+        let clamped = min(max(quality, 0.3), 1.0)
+        // Maps 0.3...1.0 -> 35...92 on VideoToolbox's 1...100 VBR quality scale.
+        return Int((35.0 + (clamped - 0.3) / 0.7 * 57.0).rounded())
+    }
+
+    private nonisolated static func vp9CRF(_ quality: Double) -> Int {
+        let clamped = min(max(quality, 0.3), 1.0)
+        // Maps 0.3...1.0 -> CRF 42...18 (lower CRF = higher quality).
+        return Int((42.0 - (clamped - 0.3) / 0.7 * 24.0).rounded())
     }
 
     private nonisolated static func audioBitrate(_ quality: Double) -> Int {
@@ -290,6 +310,7 @@ final class MediaProcess: @unchecked Sendable {
 
     private let executable: URL
     private let arguments: [String]
+    private let qualityOfService: QualityOfService
     private let onStdoutLine: (@Sendable (String) -> Void)?
 
     private let lock = NSLock()
@@ -309,10 +330,12 @@ final class MediaProcess: @unchecked Sendable {
     init(
         executable: URL,
         arguments: [String],
+        qualityOfService: QualityOfService = .userInitiated,
         onStdoutLine: (@Sendable (String) -> Void)? = nil
     ) {
         self.executable = executable
         self.arguments = arguments
+        self.qualityOfService = qualityOfService
         self.onStdoutLine = onStdoutLine
     }
 
@@ -351,6 +374,7 @@ final class MediaProcess: @unchecked Sendable {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        process.qualityOfService = qualityOfService
         process.environment = ["PATH": "/usr/bin:/bin"]
         process.standardInput = FileHandle.nullDevice
 
@@ -411,7 +435,9 @@ final class MediaProcess: @unchecked Sendable {
             stdoutEOF = true
             handle.readabilityHandler = nil
         } else {
-            stdout.append(data)
+            if onStdoutLine == nil {
+                stdout.append(data)
+            }
             stdoutRemainder += String(decoding: data, as: UTF8.self)
             while let newline = stdoutRemainder.firstIndex(of: "\n") {
                 let line = String(stdoutRemainder[..<newline])

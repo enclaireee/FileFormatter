@@ -327,4 +327,38 @@ struct PDFToolsTests {
         #expect(compress.items.map(\.outputName) == ["a-small.pdf"])
         #expect(compress.items.first?.pdfMode == .compress)
     }
+
+    @Test func rendersLivePreviewForRotateStampAndLockedPDF() throws {
+        let d = try tempDir(); defer { try? FileManager.default.removeItem(at: d) }
+        let src = d.appendingPathComponent("p.pdf")
+        makePDF(at: src, pages: 3)
+
+        var rotate = PDFToolRequest(kind: .rotate)
+        rotate.rotation = 90
+        let rotated = PDFTools.renderPreview(source: src, tool: rotate)
+        #expect(rotated.pageCount == 3)
+        #expect(!rotated.isLocked)
+        #expect(rotated.image != nil)
+
+        var stamp = PDFToolRequest(kind: .stamp)
+        stamp.watermark = "CONFIDENTIAL"
+        stamp.pageNumbers = true
+        let stamped = PDFTools.renderPreview(source: src, tool: stamp)
+        #expect(stamped.image != nil)
+
+        let lockedURL = d.appendingPathComponent("locked.pdf")
+        var protect = PDFToolRequest(kind: .protect)
+        protect.password = "pw123"
+        try PDFTools.apply(protect, source: src, destination: lockedURL)
+
+        let lockedPreview = PDFTools.renderPreview(source: lockedURL, tool: PDFToolRequest(kind: .unlock))
+        #expect(lockedPreview.isLocked)
+        #expect(lockedPreview.image == nil)
+
+        var unlock = PDFToolRequest(kind: .unlock)
+        unlock.password = "pw123"
+        let unlockedPreview = PDFTools.renderPreview(source: lockedURL, tool: unlock)
+        #expect(!unlockedPreview.isLocked)
+        #expect(unlockedPreview.image != nil)
+    }
 }

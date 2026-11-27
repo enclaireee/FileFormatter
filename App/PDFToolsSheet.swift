@@ -95,8 +95,8 @@ struct PDFToolsSheet: View {
             add(pdfs)
             return true
         }
-        .task(id: urls.first) {
-            loadPreview()
+        .task(id: PreviewKey(url: urls.first, request: request)) {
+            await loadPreview()
         }
         .onChange(of: kind) { _, newValue in
             error = nil
@@ -398,22 +398,34 @@ struct PDFToolsSheet: View {
         add(panel.urls)
     }
 
-    private func loadPreview() {
-        thumbnail = nil
-        pageCount = nil
-        isLocked = false
+    private struct PreviewKey: Equatable {
+        let url: URL?
+        let request: PDFToolRequest
+    }
+
+    private func loadPreview() async {
         previewFailed = false
-        guard let url = urls.first else { return }
-        guard let document = PDFDocument(url: url) else {
-            previewFailed = true
+        guard let url = urls.first else {
+            thumbnail = nil
+            pageCount = nil
+            isLocked = false
             return
         }
-        pageCount = document.pageCount
-        isLocked = document.isLocked
-        guard !isLocked else { return }
-        if let page = document.page(at: 0) {
-            thumbnail = page.thumbnail(of: NSSize(width: 300, height: 360), for: .cropBox)
-        }
+        try? await Task.sleep(for: .milliseconds(100))
+        guard !Task.isCancelled else { return }
+        let currentRequest = request
+        let rendered = await Task.detached(priority: .userInitiated) {
+            PDFTools.renderPreview(
+                source: url,
+                tool: currentRequest,
+                maxSize: NSSize(width: 300, height: 360)
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        pageCount = rendered.pageCount > 0 ? rendered.pageCount : nil
+        isLocked = rendered.isLocked
+        thumbnail = rendered.image
+        previewFailed = !rendered.isLocked && rendered.image == nil
     }
 
     private func run() {

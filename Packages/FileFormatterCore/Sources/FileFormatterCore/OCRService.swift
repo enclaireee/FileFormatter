@@ -101,12 +101,14 @@ public actor OCRService {
     nonisolated public func makeSearchablePDF(
         source: URL,
         destination: URL,
-        languages: [String] = []
+        languages: [String] = [],
+        progress: (@Sendable (Double) -> Void)? = nil
     ) throws {
         guard let document = PDFDocument(url: source) else {
             throw OCRError.unreadablePDF
         }
-        guard document.pageCount > 0 else {
+        let total = document.pageCount
+        guard total > 0 else {
             throw OCRError.noPages
         }
 
@@ -118,12 +120,15 @@ public actor OCRService {
             throw OCRError.recognitionFailed("Could not create a PDF context.")
         }
 
-        for index in 0..<document.pageCount {
+        progress?(0)
+        for index in 0..<total {
+            try Task.checkCancellation()
             guard let page = document.page(at: index) else { continue }
             // Each 2x page bitmap is autoreleased; drain per page or every page stays alive until the loop ends.
             try autoreleasepool {
                 let bounds = page.bounds(for: .mediaBox)
                 let image = try PDFPageRenderer.render(page: page)
+                try Task.checkCancellation()
                 let result = try recognize(image: image, languages: languages)
 
                 let pageInfo = [kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary
@@ -134,6 +139,7 @@ public actor OCRService {
                 drawInvisible(result.lines, in: bounds, context: context)
                 context.endPDFPage()
             }
+            progress?(Double(index + 1) / Double(total))
         }
 
         context.closePDF()

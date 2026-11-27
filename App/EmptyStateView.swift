@@ -1,56 +1,68 @@
+import AppKit
 import FileFormatterCore
 import SwiftUI
 
 struct EmptyStateView: View {
     @Bindable var model: AppModel
     var isDropTargeted = false
+    @State private var canPaste = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// A few common starting points; the full list is in the inspector's Preset picker.
+    /// Everyday outcomes shown upfront so users can start in 1 click without opening a dropdown.
     private var starters: [Preset] {
-        ["web-images", "images-pdf", "office-markdown", "video-mp4"].compactMap { id in
+        ["web-images", "remove-bg", "compress-pdf", "images-pdf", "video-mp4", "office-markdown"].compactMap { id in
             Preset.builtIn.first { $0.id == id }
         }
     }
 
     var body: some View {
-        VStack(spacing: Theme.Space.xxl) {
-            Spacer(minLength: Theme.Space.lg)
+        VStack(spacing: Theme.Space.xl) {
+            Spacer(minLength: Theme.Space.md)
 
             dropCard
 
             VStack(spacing: Theme.Space.sm) {
-                Text("START FROM A PRESET")
-                    .font(.caption2.weight(.semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.tertiary)
+                Text(model.activePreset.map { "Selected recipe: \($0.name) — now drop your files above" }
+                     ?? "Or pick a quick recipe first")
+                    .font(Theme.Text.caption.weight(.medium))
+                    .foregroundStyle(model.activePreset != nil ? Theme.Palette.accent : .secondary)
 
-                FlowLayout(spacing: Theme.Space.sm) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(minimum: 150, maximum: 210), spacing: 8),
+                        GridItem(.flexible(minimum: 150, maximum: 210), spacing: 8),
+                        GridItem(.flexible(minimum: 150, maximum: 210), spacing: 8)
+                    ],
+                    spacing: 8
+                ) {
                     ForEach(starters) { preset in
-                        presetChip(preset)
+                        presetCard(preset)
                     }
                 }
-                .frame(maxWidth: 540)
-
-                Text(model.activePreset.map { "\($0.name) is ready. Drop files to use it." }
-                     ?? "Or drop files and choose formats afterwards.")
-                    .font(Theme.Text.caption)
-                    .foregroundStyle(.secondary)
+                .frame(maxWidth: 620)
             }
 
             Spacer(minLength: Theme.Space.md)
 
-            VStack(spacing: 4) {
-                Label("On-device only. Your files never leave this Mac.", systemImage: "lock.shield")
-                Text("You can also drop files on the menu bar icon or use Finder Quick Actions.")
+            HStack(spacing: 14) {
+                Label("100% On-device", systemImage: "lock.shield")
+                Text("·")
+                Label("Originals never overwritten", systemImage: "arrow.uturn.backward.circle")
+                Text("·")
+                Text("Menu bar shortcut: ⌥⌘F")
             }
             .font(Theme.Text.caption)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
+            .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, Theme.Space.xxl)
         .padding(.vertical, Theme.Space.xl)
+        .onAppear {
+            canPaste = ClipboardImport.hasPasteableContent()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            canPaste = ClipboardImport.hasPasteableContent()
+        }
     }
 
     private var dropCard: some View {
@@ -58,39 +70,56 @@ struct EmptyStateView: View {
             IconTile(
                 systemImage: isDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc",
                 tone: isDropTargeted ? .accent : .neutral,
-                size: 66
+                size: 64
             )
             .contentTransition(.symbolEffect(.replace))
 
             VStack(spacing: 6) {
-                Text(isDropTargeted ? "Drop to add" : "Drop files to convert")
+                Text(isDropTargeted ? "Release to add files" : "Drop files or folders here")
                     .font(.title2.weight(.semibold))
-                Text("Images, PDFs, documents, audio or video. You'll see every result before anything is written.")
+                Text("Convert images, PDFs, Office docs, data, audio, and video—preview every output before running.")
                     .font(Theme.Text.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 390)
+                    .frame(maxWidth: 430)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: Theme.Space.md) {
-                Button("Choose Files…") {
+            HStack(spacing: 10) {
+                Button {
                     model.showImporter = true
+                } label: {
+                    Label("Choose Files…", systemImage: "doc.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
-                Text("or press ⌘O")
-                    .font(Theme.Text.caption)
-                    .foregroundStyle(.secondary)
+                Button {
+                    model.showFolderImporter = true
+                } label: {
+                    Label("Choose Folder…", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
+                if canPaste {
+                    Button {
+                        model.pasteFromClipboard()
+                    } label: {
+                        Label("Paste", systemImage: "doc.on.clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .help("Paste copied files or screenshot (⌘V)")
+                }
             }
         }
-        .padding(.vertical, 38)
+        .padding(.vertical, 36)
         .padding(.horizontal, Theme.Space.xxl)
-        .frame(maxWidth: 560)
+        .frame(maxWidth: 620)
         .background {
             RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous)
-                .fill(isDropTargeted ? Theme.Palette.accent.opacity(0.07) : Theme.Palette.surface.opacity(0.55))
+                .fill(isDropTargeted ? Theme.Palette.accent.opacity(0.08) : Theme.Palette.surface.opacity(0.55))
         }
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous)
@@ -102,38 +131,53 @@ struct EmptyStateView: View {
         .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: isDropTargeted)
     }
 
-    private func presetChip(_ preset: Preset) -> some View {
+    private func presetCard(_ preset: Preset) -> some View {
         let selected = model.activePreset?.id == preset.id
         return Button {
             model.apply(preset)
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: preset.systemImage)
-                    .font(.caption)
-                Text(preset.name)
-                    .lineLimit(1)
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.caption2.weight(.bold))
+            HStack(spacing: 9) {
+                IconTile(
+                    systemImage: preset.systemImage,
+                    tone: selected ? .accent : .neutral,
+                    size: 28
+                )
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text(preset.name)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        if selected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.Palette.accent)
+                        }
+                    }
+                    if !preset.subtitle.isEmpty {
+                        Text(preset.subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            .font(.callout)
-            .foregroundStyle(selected ? Theme.Palette.accent : Color.primary)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             .background(
-                selected ? Theme.Palette.accent.opacity(0.12) : Color.primary.opacity(0.04),
-                in: Capsule()
+                selected ? Theme.Palette.accent.opacity(0.11) : Color.primary.opacity(0.035),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
             )
             .overlay {
-                Capsule()
+                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .strokeBorder(
-                        selected ? Theme.Palette.accent.opacity(0.35) : Theme.Palette.hairline.opacity(0.5),
+                        selected ? Theme.Palette.accent.opacity(0.45) : Theme.Palette.hairline.opacity(0.45),
                         lineWidth: 1
                     )
             }
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help("Use \(preset.name) for the next files")
+        .help("Apply \(preset.name) recipe")
     }
 }

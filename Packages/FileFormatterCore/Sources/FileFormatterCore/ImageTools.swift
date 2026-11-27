@@ -1,6 +1,8 @@
+import Accelerate
 import CoreGraphics
 import CoreImage
 import CoreML
+import Dispatch
 import Foundation
 import ImageIO
 import Synchronization
@@ -8,9 +10,10 @@ import Vision
 
 public enum ImageTools {
     public static func load(_ url: URL, maxPixelSize: Int?) throws -> (image: CGImage, properties: [CFString: Any]) {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions),
               CGImageSourceGetCount(source) > 0,
-              var properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+              var properties = CGImageSourceCopyPropertiesAtIndex(source, 0, sourceOptions) as? [CFString: Any] else {
             throw ConversionError.cannotReadSource(url.lastPathComponent)
         }
         let width = (properties[kCGImagePropertyPixelWidth] as? Int) ?? 0
@@ -21,6 +24,7 @@ public enum ImageTools {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCache: false,
             kCGImageSourceThumbnailMaxPixelSize: max(limit, 1)
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
@@ -123,11 +127,27 @@ public enum ImageTools {
         return result
     }
 
-    // ponytail: one cached model; conversions run one at a time. Keyed by URL so tests can swap models.
+    // ponytail: one cached model; evicted after idle runs or under system memory pressure.
     private static let cachedModel = Mutex<(url: URL, model: MLModel)?>(nil)
 
+    public static func evictCachedModel() {
+        cachedModel.withLock { $0 = nil }
+    }
+
+    private static let memoryPressureMonitor: DispatchSourceMemoryPressure = {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
+        source.setEventHandler {
+            ImageTools.evictCachedModel()
+            PDFPageRenderer.evictCache()
+            PDFTools.evictCache()
+        }
+        source.resume()
+        return source
+    }()
+
     private static func loadModel(_ url: URL) throws -> MLModel {
-        try cachedModel.withLock { cached in
+        _ = memoryPressureMonitor
+        return try cachedModel.withLock { cached in
             if let cached, cached.url == url { return cached.model }
             let config = MLModelConfiguration()
             // ponytail: cpuOnly. The Neural Engine takes ~110 s to load and .all fails to build; the GPU pins ~3.5 GB
@@ -153,20 +173,37 @@ public enum ImageTools {
         let input = try MLMultiArray(shape: [1, 3, NSNumber(value: side), NSNumber(value: side)], dataType: .float32)
         let pixels = input.dataPointer.assumingMemoryBound(to: Float.self)
         let mean: [Float] = [0.485, 0.456, 0.406], std: [Float] = [0.229, 0.224, 0.225]
-        for i in 0..<plane {
-            for c in 0..<3 { pixels[c * plane + i] = (Float(rgba[i * 4 + c]) / 255 - mean[c]) / std[c] }
+        rgba.withUnsafeBufferPointer { src in
+            guard let base = src.baseAddress else { return }
+            for c in 0..<3 {
+                let dstPlane = pixels.advanced(by: c * plane)
+                vDSP_vfltu8(base.advanced(by: c), 4, dstPlane, 1, vDSP_Length(plane))
+                var scale: Float = 1.0 / (255.0 * std[c])
+                var bias: Float = -mean[c] / std[c]
+                vDSP_vsmsa(dstPlane, 1, &scale, &bias, dstPlane, 1, vDSP_Length(plane))
+            }
         }
 
         let output = try loadModel(url).prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": input]))
         guard let logits = output.featureValue(for: "mask_logits")?.multiArrayValue,
               logits.count == plane, logits.dataType == .float32 else { return nil }
         let raw = logits.dataPointer.assumingMemoryBound(to: Float.self)
+
+        var scratch = [Float](repeating: 0, count: plane)
+        vDSP_vneg(raw, 1, &scratch, 1, vDSP_Length(plane))
+        var count32 = Int32(plane)
+        vvexpf(&scratch, scratch, &count32)
+        var one: Float = 1.0
+        vDSP_vsadd(scratch, 1, &one, &scratch, 1, vDSP_Length(plane))
+        var maxByte: Float = 255.0
+        vDSP_svdiv(&maxByte, scratch, 1, &scratch, 1, vDSP_Length(plane))
+        var low: Float = 0.0, high: Float = 255.0
+        vDSP_vclip(scratch, 1, &low, &high, &scratch, 1, vDSP_Length(plane))
+
         var alpha = [UInt8](repeating: 0, count: plane)
+        vDSP_vfixu8(scratch, 1, &alpha, 1, vDSP_Length(plane))
         var solid = 0
-        for i in 0..<plane {
-            alpha[i] = UInt8(max(0, min(255, 255 / (1 + exp(-raw[i])))))
-            if alpha[i] > 127 { solid += 1 }
-        }
+        for value in alpha where value > 127 { solid += 1 }
         guard solid * 1000 >= plane else { return nil }
 
         let small = CIImage(bitmapData: Data(alpha), bytesPerRow: side, size: CGSize(width: side, height: side),

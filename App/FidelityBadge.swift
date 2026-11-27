@@ -32,6 +32,7 @@ struct FidelityBadge: View {
 
 struct StatusBadge: View {
     let status: ItemStatus
+    var progress: Double? = nil
 
     var body: some View {
         switch status {
@@ -42,7 +43,12 @@ struct StatusBadge: View {
             HStack(spacing: 5) {
                 ProgressView()
                     .controlSize(.mini)
-                Text("Converting")
+                if let progress, progress > 0, progress < 1 {
+                    Text("Converting \(Int((progress * 100).rounded()))%")
+                        .monospacedDigit()
+                } else {
+                    Text("Converting")
+                }
             }
         case .completed:
             Label("Done", systemImage: "checkmark.circle.fill")

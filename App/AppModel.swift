@@ -36,7 +36,7 @@ final class AppModel {
     var audioTarget: ConversionTarget = .mp3
     var videoTarget: ConversionTarget = .mp4
     var quality: Double = 0.85
-    var suffix: String = "-converted"
+    var suffix: String = ""
     var preserveMetadata = true
     var pdfMode: PDFMode = .pages
     var removeBackground = false
@@ -50,9 +50,12 @@ final class AppModel {
     var notice: Notice?
     /// The file being converted right now, for the progress line.
     var currentItemName: String?
+    /// Live 0...1 progress of the active heavy file (video, audio, multi-page OCR).
+    var currentItemProgress: Double?
     /// Output sizes of finished rows, read once when each file completes.
     var outputSizes: [UUID: UInt64] = [:]
     var showImporter = false
+    var showFolderImporter = false
     var showCompletion = false
     var showRename = false
     var lastSummary: RunSummary?
@@ -60,6 +63,17 @@ final class AppModel {
     var watchRules: [WatchRule] = []
     var completedCount = 0
     var totalToConvert = 0
+
+    // Incremental O(1) queue counters so SwiftUI views never re-scan `items` on every status tick.
+    private(set) var pendingCount = 0
+    private(set) var finishedCount = 0
+    private(set) var skippedCount = 0
+    private(set) var failedCount = 0
+    private(set) var cachedInputBytes: UInt64 = 0
+    private(set) var cachedPresentKinds: Set<FileKind> = []
+    private(set) var cachedUnsupportedIDs: Set<UUID> = []
+    private var indexByID: [UUID: Int] = [:]
+    private var dynamicallyQueued: [ConversionItem] = []
 
     /// Menu bar / Finder runs, tracked separately so they never touch the window queue.
     var quickItems: [ConversionItem] = []
@@ -72,6 +86,7 @@ final class AppModel {
     private var replanTask: Task<Void, Never>?
     private var runTask: Task<Void, Never>?
     private var quickTask: Task<RunSummary?, Never>?
+    private var idleEvictTask: Task<Void, Never>?
     private var watchStarted = false
 
     init() {
@@ -90,9 +105,10 @@ final class AppModel {
                 && preset.videoTarget == videoTarget
                 && preset.suffix == suffix
                 && abs(preset.quality - quality) < 0.001
-                && !removeBackground && maxPixelSize == nil
+                && preset.removeBackground == removeBackground
+                && maxPixelSize == nil
                 && imageTargetBytes == nil && videoTargetBytes == nil
-                && pdfMode == .pages
+                && preset.pdfMode == pdfMode
         }
     }
 
@@ -104,13 +120,34 @@ final class AppModel {
         videoTarget = preset.videoTarget
         quality = preset.quality
         suffix = preset.suffix
-        // A preset is the whole recipe: clear the extras so the sidebar/inspector checkmark stays honest.
-        removeBackground = false
+        removeBackground = preset.removeBackground
         maxPixelSize = nil
         imageTargetBytes = nil
         videoTargetBytes = nil
-        pdfMode = .pages
+        pdfMode = preset.pdfMode
         scheduleReplan()
+    }
+
+    func pasteFromClipboard() {
+        let urls = ClipboardImport.pasteURLs()
+        guard !urls.isEmpty else {
+            inform(.info, "Nothing to paste", "Copy files in Finder or take a screenshot to the clipboard first.")
+            return
+        }
+        addFiles(urls)
+    }
+
+    func chooseOutputFolderInteractively() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Use Folder"
+        panel.directoryURL = AppSettings.bookmarkedFolder()
+            ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        if panel.runModal() == .OK, let url = panel.url, (try? AppSettings.replaceOutputFolder(with: url)) != nil {
+            UserDefaults.standard.set(true, forKey: AppSettings.useFolder)
+        }
     }
 
     /// Why Convert is disabled, in words, or nil when it can run.
@@ -120,7 +157,7 @@ final class AppModel {
         if isPlanning { return "Preparing the files…" }
         if items.isEmpty { return "Add files first." }
         if runnableCount == 0 {
-            return items.contains { $0.status == .completed } ? "Everything is converted. Change a setting to convert again." : "Nothing here can be converted with these settings."
+            return finishedCount > 0 ? "Everything is converted. Change a setting to convert again." : "Nothing here can be converted with these settings."
         }
         return nil
     }
@@ -128,7 +165,9 @@ final class AppModel {
     var canRun: Bool { runBlockedReason == nil }
 
     var progress: Double {
-        totalToConvert == 0 ? 0 : Double(completedCount) / Double(totalToConvert)
+        guard totalToConvert > 0 else { return 0 }
+        let partial = currentItemProgress ?? 0
+        return min(1.0, (Double(completedCount) + partial) / Double(totalToConvert))
     }
 
     /// Where files go, in words, for the Output section and the bottom bar.
@@ -160,17 +199,10 @@ final class AppModel {
     }
 
     func hasKind(_ kind: FileKind) -> Bool {
-        items.contains { $0.kind == kind }
+        cachedPresentKinds.contains(kind)
     }
-    var runnableCount: Int { items.filter { $0.status == .pending }.count }
-    var inputBytes: UInt64 {
-        var seen = Set<String>()
-        var total: UInt64 = 0
-        for item in items where seen.insert(item.sourceURL.path).inserted {
-            total += item.byteSize
-        }
-        return total
-    }
+    var runnableCount: Int { pendingCount }
+    var inputBytes: UInt64 { cachedInputBytes }
 
     var fidelityCounts: [(FidelityLevel, Int)] {
         FidelityLevel.allCases.compactMap { level in
@@ -179,10 +211,67 @@ final class AppModel {
         }
     }
 
+    private func rebuildQueueCaches() {
+        var pending = 0
+        var finished = 0
+        var skipped = 0
+        var failed = 0
+        var bytes: UInt64 = 0
+        var seenPaths = Set<String>()
+        var kinds = Set<FileKind>()
+        var unsupported = Set<UUID>()
+        var map: [UUID: Int] = [:]
+        map.reserveCapacity(items.count)
+
+        for (idx, item) in items.enumerated() {
+            map[item.id] = idx
+            kinds.insert(item.kind)
+            if item.fidelity == .unsupported {
+                unsupported.insert(item.id)
+            }
+            if seenPaths.insert(item.sourceURL.path).inserted {
+                bytes += item.byteSize
+            }
+            switch item.status {
+            case .pending: pending += 1
+            case .converting: break
+            case .completed: finished += 1
+            case .skipped: skipped += 1
+            case .failed: failed += 1
+            }
+        }
+
+        indexByID = map
+        pendingCount = pending
+        finishedCount = finished
+        skippedCount = skipped
+        failedCount = failed
+        cachedInputBytes = bytes
+        cachedPresentKinds = kinds
+        cachedUnsupportedIDs = unsupported
+    }
+
+    private func adjustCounters(from old: ItemStatus, to new: ItemStatus) {
+        if old == new { return }
+        switch old {
+        case .pending: pendingCount = max(0, pendingCount - 1)
+        case .converting: break
+        case .completed: finishedCount = max(0, finishedCount - 1)
+        case .skipped: skippedCount = max(0, skippedCount - 1)
+        case .failed: failedCount = max(0, failedCount - 1)
+        }
+        switch new {
+        case .pending: pendingCount += 1
+        case .converting: break
+        case .completed: finishedCount += 1
+        case .skipped: skippedCount += 1
+        case .failed: failedCount += 1
+        }
+    }
+
     func addFiles(_ urls: [URL]) {
-        // Replanning mid-run would swap the rows the run loop is writing to.
-        guard !isRunning else {
-            inform(.info, "Wait for this conversion to finish", "Then drop the files again to add them.")
+        if isRunning && pdfMode == .merge {
+            inform(.info, "Wait for this PDF merge to finish", "Merging combines every file into one document.")
             return
         }
         Task {
@@ -191,11 +280,39 @@ final class AppModel {
                 inform(.warning, "No files found", "That folder is empty. Drop images, PDFs, audio, video, Office or data files.")
                 return
             }
-            guard !isRunning else { return }
             let existing = Set(items.map { $0.sourceURL.standardizedFileURL.path })
             let new = expanded.filter { !existing.contains($0.standardizedFileURL.path) }
             guard !new.isEmpty else { return }
-            await plan(urls: items.map(\.sourceURL) + new)
+
+            if isRunning {
+                do {
+                    let result = try await service.makePlan(
+                        urls: new,
+                        targets: TargetRecipe(
+                            image: imageTarget,
+                            data: dataTarget,
+                            document: documentTarget,
+                            audio: audioTarget,
+                            video: videoTarget
+                        ),
+                        suffix: suffix,
+                        pdfMode: pdfMode
+                    )
+                    guard !result.items.isEmpty || !result.warnings.isEmpty else { return }
+                    items.append(contentsOf: result.items)
+                    warnings.append(contentsOf: result.warnings)
+                    rebuildQueueCaches()
+                    if isRunning {
+                        let newlyPending = result.items.filter { $0.status == .pending }
+                        totalToConvert += newlyPending.count
+                        dynamicallyQueued.append(contentsOf: newlyPending)
+                    }
+                } catch {
+                    present(error: error)
+                }
+            } else {
+                await plan(urls: items.map(\.sourceURL) + new)
+            }
         }
     }
 
@@ -245,35 +362,79 @@ final class AppModel {
 
     func run() async {
         guard !isRunning else { return }
-        let pendingCount = items.filter { $0.status == .pending }.count
         guard pendingCount > 0 else { return }
 
+        idleEvictTask?.cancel()
         replanTask?.cancel()
+        dynamicallyQueued.removeAll()
         isRunning = true
         totalToConvert = pendingCount
         completedCount = 0
+        currentItemProgress = nil
+        let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Converting files")
         defer {
+            ProcessInfo.processInfo.endActivity(activity)
             isRunning = false
             currentItemName = nil
+            currentItemProgress = nil
+            dynamicallyQueued.removeAll()
+            scheduleIdleCacheEviction()
         }
 
         let job = windowJob
-        let tally = await execute(items, job: job) { index, status, output in
-            self.items[index].status = status
-            self.items[index].outputURL = output
-            if status == .converting { self.currentItemName = self.items[index].displayName }
-            if status.isTerminal { self.completedCount += 1 }
-            if let output, status == .completed {
-                self.outputSizes[self.items[index].id] = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init)
+        let initialSnapshot = items
+        let tally = await execute(
+            initialSnapshot,
+            job: job,
+            allowDynamicQueue: true,
+            updateStatus: { id, status, output in
+                guard let index = self.indexByID[id] else { return }
+                let oldStatus = self.items[index].status
+                self.items[index].status = status
+                self.items[index].outputURL = output
+                if status != .converting {
+                    self.items[index].progress = nil
+                }
+                self.adjustCounters(from: oldStatus, to: status)
+                if status == .converting {
+                    self.currentItemName = self.items[index].displayName
+                    self.currentItemProgress = nil
+                }
+                if status.isTerminal {
+                    self.completedCount += 1
+                    self.currentItemProgress = nil
+                }
+                if let output, status == .completed {
+                    self.outputSizes[id] = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init)
+                }
+            },
+            updateProgress: { id, fraction in
+                guard let index = self.indexByID[id], self.items[index].status == .converting else { return }
+                let previous = self.items[index].progress ?? 0
+                guard fraction >= previous + 0.01 || fraction >= 1.0 else { return }
+                self.items[index].progress = fraction
+                self.currentItemProgress = fraction
             }
-        }
+        )
 
-        let summary = tally.summary(job: job, items: items)
+        let bookmark = AppSettings.bool(AppSettings.useFolder)
+            ? UserDefaults.standard.data(forKey: AppSettings.folderBookmark)
+            : nil
+        let summary = tally.summary(job: job, items: items, outputFolderBookmark: bookmark)
         try? await journal.save(summary)
         if !tally.cancelled { NotificationService.shared.notify(summary) }
         lastSummary = summary
         showResult(summary, stopped: tally.cancelled, retryable: summary.failed > 0)
         if !tally.cancelled { revealIfWanted(summary) }
+    }
+
+    private func scheduleIdleCacheEviction() {
+        idleEvictTask?.cancel()
+        idleEvictTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, let self, !self.isRunning, !self.isQuickRunning else { return }
+            ConversionService.evictIdleCaches()
+        }
     }
 
     /// Opens Finder on a finished run's outputs when Settings asks for it. Watch-folder runs never call this.
@@ -320,8 +481,12 @@ final class AppModel {
     func retryFailed() {
         guard !isRunning else { return }
         for index in items.indices {
-            if case .failed = items[index].status { items[index].status = .pending }
+            if case .failed = items[index].status {
+                items[index].status = .pending
+                items[index].progress = nil
+            }
         }
+        rebuildQueueCaches()
         notice = nil
         startRun()
     }
@@ -330,6 +495,7 @@ final class AppModel {
     func clearFinished() {
         guard !isRunning else { return }
         items.removeAll { $0.status == .completed }
+        rebuildQueueCaches()
         selection.removeAll()
         notice = nil
     }
@@ -377,11 +543,19 @@ final class AppModel {
     private func performQuickRun(urls: [URL], job: ConversionJob, showsProgress: Bool) async -> RunSummary? {
         let expanded = await Self.expand(urls)
         guard !expanded.isEmpty else { return nil }
+        idleEvictTask?.cancel()
+        let activity = job.backgroundPriority
+            ? nil
+            : ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Quick conversion")
         if showsProgress {
             isQuickRunning = true
             quickSummary = nil
         }
-        defer { if showsProgress { isQuickRunning = false } }
+        defer {
+            if let activity { ProcessInfo.processInfo.endActivity(activity) }
+            if showsProgress { isQuickRunning = false }
+            scheduleIdleCacheEviction()
+        }
 
         let plan: PlanResult
         do {
@@ -407,13 +581,31 @@ final class AppModel {
         }
 
         var planned = plan.items
+        let quickIndexByID = Dictionary(uniqueKeysWithValues: planned.enumerated().map { ($0.element.id, $0.offset) })
         if showsProgress { quickItems = planned }
-        let tally = await execute(planned, job: job) { index, status, output in
-            planned[index].status = status
-            planned[index].outputURL = output
-            if showsProgress { self.quickItems = planned }
-        }
-        let summary = tally.summary(job: job, items: planned)
+        let tally = await execute(
+            planned,
+            job: job,
+            allowDynamicQueue: false,
+            updateStatus: { id, status, output in
+                guard let index = quickIndexByID[id] else { return }
+                planned[index].status = status
+                planned[index].outputURL = output
+                if status != .converting { planned[index].progress = nil }
+                if showsProgress { self.quickItems = planned }
+            },
+            updateProgress: { id, fraction in
+                guard showsProgress, let index = quickIndexByID[id], planned[index].status == .converting else { return }
+                let previous = planned[index].progress ?? 0
+                guard fraction >= previous + 0.02 || fraction >= 1.0 else { return }
+                planned[index].progress = fraction
+                self.quickItems = planned
+            }
+        )
+        let bookmark = AppSettings.bool(AppSettings.useFolder)
+            ? UserDefaults.standard.data(forKey: AppSettings.folderBookmark)
+            : nil
+        let summary = tally.summary(job: job, items: planned, outputFolderBookmark: bookmark)
         guard summary.converted + summary.failed > 0 else {
             if showsProgress { quickSummary = summary }
             return summary
@@ -446,7 +638,7 @@ final class AppModel {
         var outputBytes: UInt64 = 0
         var cancelled = false
 
-        func summary(job: ConversionJob, items: [ConversionItem]) -> RunSummary {
+        func summary(job: ConversionJob, items: [ConversionItem], outputFolderBookmark: Data? = nil) -> RunSummary {
             var seen = Set<String>()
             let inputBytes = items.reduce(UInt64(0)) { total, item in
                 seen.insert(item.sourceURL.path).inserted ? total + item.byteSize : total
@@ -459,69 +651,119 @@ final class AppModel {
                 failed: failed,
                 inputBytes: inputBytes,
                 outputBytes: outputBytes,
-                fileNumbers: fileNumbers
+                fileNumbers: fileNumbers,
+                outputFolderBookmark: outputFolderBookmark
             )
         }
     }
 
-    /// The one conversion loop, a few files at a time. Cancelling the surrounding task stops new starts
-    /// and cancels files in flight; ffmpeg is killed mid-file by MediaConverter's own cancellation handler.
+    private enum WorkWeight {
+        case light
+        case largeImage
+        case heavy
+    }
+
+    /// The one conversion loop, keyed by item UUID so files dropped mid-run join seamlessly.
+    /// Cancelling the surrounding task stops new starts and cancels files in flight.
     private func execute(
-        _ items: [ConversionItem],
+        _ initialItems: [ConversionItem],
         job: ConversionJob,
-        update: (Int, ItemStatus, URL?) -> Void
+        allowDynamicQueue: Bool,
+        updateStatus: (UUID, ItemStatus, URL?) -> Void,
+        updateProgress: @escaping @MainActor (UUID, Double) -> Void
     ) async -> RunTally {
         var tally = RunTally()
         var job = job
         job.outputDirectory = AppSettings.outputFolder()
         if AppSettings.bool(AppSettings.useFolder), job.outputDirectory == nil {
             // Never fall back silently: the user expects files in their folder.
-            for index in items.indices where items[index].status == .pending {
+            for item in initialItems where item.status == .pending {
                 tally.failed += 1
-                update(index, .failed("Output folder unavailable. Choose it again in Settings."), nil)
+                updateStatus(item.id, .failed("Output folder unavailable. Choose it again in Settings."), nil)
             }
             return tally
         }
-        var waiting: [(index: Int, options: ConversionOptions, heavy: Bool)] = []
-        for index in items.indices where items[index].status == .pending {
-            let item = items[index]
+
+        func prepare(_ item: ConversionItem) -> (item: ConversionItem, options: ConversionOptions, weight: WorkWeight)? {
             guard let target = job.target(for: item) else {
-                update(index, .skipped("No target for \(item.kind.label)"), nil)
-                continue
+                updateStatus(item.id, .skipped("No target for \(item.kind.label)"), nil)
+                return nil
             }
             let options = job.options(for: item, target: target)
             // ffmpeg, CoreML, Vision and Quartz filters already fan out (or may not be thread-safe): one at a time.
-            let heavy = item.kind == .audio || item.kind == .video || options.removeBackground
+            let isHeavy = item.kind == .audio || item.kind == .video || options.removeBackground
                 || item.pdfMode == .searchable || item.pdfMode == .compress
-            waiting.append((index, options, heavy))
+            let isLargeImage = !isHeavy && item.kind == .image
+                && (item.byteSize > 12_000_000 || options.targetBytes != nil || options.target == .webp)
+            let weight: WorkWeight = isHeavy ? .heavy : (isLargeImage ? .largeImage : .light)
+            return (item, options, weight)
         }
 
-        // ponytail: light work runs up to 4 wide, which bounds peak RAM from big decoded images.
-        let width = min(ProcessInfo.processInfo.activeProcessorCount, 4)
+        var waiting: [(item: ConversionItem, options: ConversionOptions, weight: WorkWeight)] = []
+        for item in initialItems where item.status == .pending {
+            if let entry = prepare(item) { waiting.append(entry) }
+        }
+
+        let width = job.backgroundPriority ? 2 : min(ProcessInfo.processInfo.activeProcessorCount, 4)
         let service = service
-        typealias Outcome = (index: Int, heavy: Bool, result: Result<(url: URL, outputBytes: UInt64, extras: [URL]), any Error>)
+        typealias Outcome = (id: UUID, weight: WorkWeight, result: Result<(url: URL, outputBytes: UInt64, extras: [URL]), any Error>)
         await withTaskGroup(of: Outcome.self) { group in
             var running = 0
             var heavyRunning = false
+            var largeImagesRunning = 0
+
+            func canStart(_ weight: WorkWeight) -> Bool {
+                switch weight {
+                case .heavy: return !heavyRunning
+                case .largeImage: return largeImagesRunning < 2
+                case .light: return true
+                }
+            }
+
             while true {
+                if allowDynamicQueue, !self.dynamicallyQueued.isEmpty {
+                    let added = self.dynamicallyQueued
+                    self.dynamicallyQueued.removeAll()
+                    for item in added where item.status == .pending {
+                        if let entry = prepare(item) { waiting.append(entry) }
+                    }
+                }
                 while running < width, !Task.isCancelled,
-                      let next = waiting.firstIndex(where: { !$0.heavy || !heavyRunning }) {
-                    let (index, options, heavy) = waiting.remove(at: next)
-                    let item = items[index]
+                      let next = waiting.firstIndex(where: { canStart($0.weight) }) {
+                    let (item, options, weight) = waiting.remove(at: next)
+                    let id = item.id
                     running += 1
-                    if heavy { heavyRunning = true }
-                    update(index, .converting, nil)
-                    group.addTask {
+                    if weight == .heavy { heavyRunning = true }
+                    if weight == .largeImage { largeImagesRunning += 1 }
+                    updateStatus(id, .converting, nil)
+                    let taskPriority: TaskPriority = job.backgroundPriority ? .utility : .userInitiated
+                    group.addTask(priority: taskPriority) {
                         do {
-                            return (index, heavy, .success(try await service.convert(item, options: options)))
+                            let converted = try await service.convert(item, options: options) { fraction in
+                                Task { @MainActor in
+                                    updateProgress(id, fraction)
+                                }
+                            }
+                            return (id, weight, .success(converted))
                         } catch {
-                            return (index, heavy, .failure(error))
+                            return (id, weight, .failure(error))
                         }
                     }
                 }
-                guard let outcome = await group.next() else { break }
+                guard let outcome = await group.next() else {
+                    if allowDynamicQueue, !self.dynamicallyQueued.isEmpty {
+                        let added = self.dynamicallyQueued
+                        self.dynamicallyQueued.removeAll()
+                        for item in added where item.status == .pending {
+                            if let entry = prepare(item) { waiting.append(entry) }
+                        }
+                    }
+                    if !Task.isCancelled && !waiting.isEmpty { continue }
+                    break
+                }
                 running -= 1
-                if outcome.heavy { heavyRunning = false }
+                if outcome.weight == .heavy { heavyRunning = false }
+                if outcome.weight == .largeImage { largeImagesRunning = max(0, largeImagesRunning - 1) }
                 switch outcome.result {
                 case .success(let result):
                     tally.outputs.append(result.url)
@@ -529,12 +771,12 @@ final class AppModel {
                     tally.fileNumbers += ([result.url] + result.extras).map(RunSummary.fileNumber)
                     tally.outputBytes += result.outputBytes
                     tally.converted += 1
-                    update(outcome.index, .completed, result.url)
+                    updateStatus(outcome.id, .completed, result.url)
                 case .failure where Task.isCancelled:
-                    update(outcome.index, .pending, nil)
+                    updateStatus(outcome.id, .pending, nil)
                 case .failure(let error):
                     tally.failed += 1
-                    update(outcome.index, .failed(error.localizedDescription), nil)
+                    updateStatus(outcome.id, .failed(error.localizedDescription), nil)
                 }
             }
         }
@@ -558,9 +800,11 @@ final class AppModel {
                 guard items[index].status == .completed,
                       let url = items[index].outputURL, outputs.contains(url.path) else { continue }
                 items[index].status = .pending
+                items[index].progress = nil
                 items[index].outputURL = nil
                 outputSizes[items[index].id] = nil
             }
+            rebuildQueueCaches()
         }
         showCompletion = false
         inform(
@@ -628,6 +872,7 @@ final class AppModel {
     func remove(_ ids: Set<UUID>) {
         guard !isRunning, !ids.isEmpty else { return }
         items.removeAll { ids.contains($0.id) }
+        rebuildQueueCaches()
         selection.subtract(ids)
     }
 
@@ -635,14 +880,20 @@ final class AppModel {
 
     /// Rows that can never convert with these settings (unsupported kinds).
     var unsupportedIDs: Set<UUID> {
-        Set(items.filter { $0.fidelity == .unsupported }.map(\.id))
+        cachedUnsupportedIDs
     }
 
     func addWatch(folder: URL, presetID: String) {
+        let bookmark = try? folder.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
         let rule = WatchRule(
             name: folder.lastPathComponent,
             folderPath: folder.standardizedFileURL.path,
-            presetID: presetID
+            presetID: presetID,
+            folderBookmark: bookmark
         )
         watchRules.append(rule)
         saveWatchRules()
@@ -679,8 +930,13 @@ final class AppModel {
 
     private func handleWatchedFile(rule: WatchRule, url: URL) async {
         guard let preset = Preset.builtIn.first(where: { $0.id == rule.presetID }) else { return }
-        // Watched conversions are silent by design; results and failures land in History.
-        await quickRun(urls: [url], job: preset.job, showsProgress: false)
+        // Watched conversions are silent by design and run at utility QoS; record outputs first so FSEvents never re-triggers on them.
+        var job = preset.job
+        job.backgroundPriority = true
+        let summary = await quickRun(urls: [url], job: job, showsProgress: false)
+        if let outputs = summary?.outputs, !outputs.isEmpty {
+            await watchService.recordGeneratedOutputs(outputs)
+        }
         if let index = watchRules.firstIndex(where: { $0.id == rule.id }) {
             watchRules[index].lastEvent = .now
             saveWatchRules()
@@ -710,6 +966,7 @@ final class AppModel {
     func clearQueue() {
         guard !isRunning else { return }
         items.removeAll()
+        rebuildQueueCaches()
         warnings.removeAll()
         selection.removeAll()
         outputSizes.removeAll()
@@ -728,6 +985,7 @@ final class AppModel {
     private func plan(urls: [URL]) async {
         guard !urls.isEmpty else {
             items.removeAll()
+            rebuildQueueCaches()
             return
         }
         isPlanning = true
@@ -748,6 +1006,7 @@ final class AppModel {
             )
             items = result.items
             warnings = result.warnings
+            rebuildQueueCaches()
         } catch {
             present(error: error)
         }

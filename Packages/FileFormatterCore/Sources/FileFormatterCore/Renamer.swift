@@ -11,21 +11,32 @@ public enum Renamer {
         public var id: URL { from }
     }
 
-    public static func preview(_ urls: [URL], pattern: String, start: Int = 1) -> [Rename] {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
+    private static func formatISO8601Day(_ date: Date) -> String {
+        let calendar = Calendar(identifier: .gregorian)
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
+    }
+
+    public static func preview(
+        _ urls: [URL],
+        pattern: String,
+        start: Int = 1,
+        creationDates: [URL: Date]? = nil
+    ) -> [Rename] {
         let sources = Set(urls.map { $0.standardizedFileURL.path.lowercased() })
 
         var drafts: [(URL, URL, String?)] = []
+        drafts.reserveCapacity(urls.count)
         for (offset, url) in urls.enumerated() {
             let ext = url.pathExtension
-            let created = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .now
+            let created = creationDates?[url]
+                ?? (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate)
+                ?? .now
             let stem = expand(
                 pattern,
                 name: url.deletingPathExtension().lastPathComponent,
                 number: start + offset,
-                date: formatter.string(from: created),
+                date: formatISO8601Day(created),
                 ext: ext
             ).trimmingCharacters(in: .whitespaces)
             let fileName = ext.isEmpty ? stem : "\(stem).\(ext)"

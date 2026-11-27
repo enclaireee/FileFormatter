@@ -15,11 +15,17 @@ final class QuickConvertState {
     /// A Compress action waiting on its options panel.
     var configuring: QuickAction?
 
+    /// Cached metadata for staged URLs so SwiftUI views don't hit disk/Finder on every redraw.
+    private(set) var cachedTotalSize: UInt64 = 0
+    private(set) var cachedIcons: [URL: NSImage] = [:]
+    private(set) var cachedOutputSizes: [URL: UInt64] = [:]
+
     func stage(_ new: [URL]) {
         summary = nil
         error = nil
         configuring = nil
         urls = new
+        refreshMetadata(for: new)
     }
 
     /// Keep the current batch and add more files to it.
@@ -28,7 +34,39 @@ final class QuickConvertState {
         error = nil
         configuring = nil
         var seen = Set(urls.map(\.path))
-        urls += new.filter { seen.insert($0.path).inserted }
+        let added = new.filter { seen.insert($0.path).inserted }
+        urls += added
+        refreshMetadata(for: urls)
+    }
+
+    func recordSummary(_ runSummary: RunSummary?) {
+        summary = runSummary
+        guard let runSummary else {
+            cachedOutputSizes = [:]
+            return
+        }
+        var sizes: [URL: UInt64] = [:]
+        for url in runSummary.outputs {
+            sizes[url] = UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        cachedOutputSizes = sizes
+    }
+
+    private func refreshMetadata(for targetURLs: [URL]) {
+        var icons: [URL: NSImage] = [:]
+        for url in targetURLs.prefix(6) {
+            icons[url] = NSWorkspace.shared.icon(forFile: url.path)
+        }
+        cachedIcons = icons
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let bytes = targetURLs.reduce(UInt64(0)) { total, url in
+                total + UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            }
+            await MainActor.run {
+                guard let self, self.urls == targetURLs else { return }
+                self.cachedTotalSize = bytes
+            }
+        }
     }
 
     func reset() {
@@ -36,6 +74,9 @@ final class QuickConvertState {
         configuring = nil
         summary = nil
         error = nil
+        cachedTotalSize = 0
+        cachedIcons = [:]
+        cachedOutputSizes = [:]
     }
 }
 
@@ -44,12 +85,22 @@ struct QuickConvertView: View {
     let model: AppModel
     var reopen: () -> Void = {}
     @State private var targeted = false
+    @State private var canPaste = false
+    @State private var copiedFeedback = false
     @AppStorage(AppSettings.revealWhenDone) private var revealWhenDone = true
+    @AppStorage(AppSettings.useFolder) private var useFolder = false
 
     private var running: Bool { model.isQuickRunning || state.isStarting }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            topBar
+                .padding(.horizontal, 14)
+                .padding(.top, 11)
+                .padding(.bottom, 9)
+
+            Hairline()
+
             Group {
                 if running { runningView }
                 else if let summary = state.summary { doneView(summary) }
@@ -58,34 +109,188 @@ struct QuickConvertView: View {
             }
             .padding(14)
 
-            Hairline()
-
-            footer
+            if model.isRunning {
+                Hairline()
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Main window: converting \(model.completedCount) of \(model.totalToConvert)")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
+            }
         }
-        .frame(width: 380)
+        .frame(width: 360)
         .background(targeted ? Theme.Palette.accent.opacity(0.05) : Color.clear)
+        .onAppear {
+            canPaste = ClipboardImport.hasPasteableContent()
+        }
         .dropDestination(for: URL.self) { urls, _ in
             guard !running else { return false }
             state.stage(urls.filter(\.isFileURL))
             return true
         } isTargeted: { targeted = $0 }
+        // Hidden shortcut receiver so ⌘V works anywhere in the popover.
+        .background {
+            Button("") { pasteFromClipboard() }
+                .keyboardShortcut("v", modifiers: .command)
+                .opacity(0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func pasteFromClipboard() {
+        guard !running else { return }
+        let urls = ClipboardImport.pasteURLs()
+        guard !urls.isEmpty else { return }
+        if state.urls.isEmpty || state.summary != nil {
+            state.stage(urls)
+        } else {
+            state.append(urls)
+        }
+    }
+
+    // MARK: Top bar
+
+    private var topBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                openMainWindow()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.Palette.accent)
+                    Text("FileFormatter")
+                        .font(.callout.weight(.semibold))
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Open main window")
+
+            Spacer(minLength: 4)
+
+            Menu {
+                Button {
+                    useFolder = false
+                } label: {
+                    if !useFolder { Label("Next to original", systemImage: "checkmark") }
+                    else { Text("Next to original") }
+                }
+                Button("Choose Output Folder…") {
+                    chooseOutputFolder()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .font(.caption2)
+                    Text(shortDestination)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.05), in: Capsule())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Where converted files are saved")
+
+            Menu {
+                Button("Open Full Window") { openMainWindow() }
+                Divider()
+                SettingsLink { Text("Settings…") }
+                Button("Check for Updates…") { Updater.shared.checkNow() }
+                    .disabled(!Updater.shared.canCheck)
+                if model.isRunning {
+                    Button("Stop Window Queue") { model.cancel() }
+                } else if model.runnableCount > 0 {
+                    Button("Convert Window Queue") { model.startRun() }
+                }
+                Divider()
+                Button("Quit FileFormatter") { NSApp.terminate(nil) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("More options")
+            .help("Settings, full window, and Quit")
+        }
+    }
+
+    private var shortDestination: String {
+        if useFolder, let folder = AppSettings.outputFolder() {
+            return folder.lastPathComponent
+        }
+        return "Same folder"
+    }
+
+    private func openMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: .init())
+        }
+    }
+
+    private func chooseOutputFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Use Folder"
+        if panel.runModal() == .OK, let url = panel.url, (try? AppSettings.replaceOutputFolder(with: url)) != nil {
+            useFolder = true
+        }
+        reopen()
     }
 
     // MARK: Empty
 
     private var emptyView: some View {
         VStack(spacing: Theme.Space.md) {
-            VStack(spacing: 7) {
-                IconTile(systemImage: "square.and.arrow.down", tone: .accent, size: 46)
-                Text("Drop files here")
-                    .font(.headline)
-                Text("Convert without opening the main window.")
-                    .font(Theme.Text.caption)
-                    .foregroundStyle(.secondary)
+            VStack(spacing: 10) {
+                IconTile(systemImage: targeted ? "arrow.down.doc.fill" : "square.and.arrow.down", tone: .accent, size: 44)
+                VStack(spacing: 3) {
+                    Text(targeted ? "Release to stage files" : "Drop files or folders")
+                        .font(.headline)
+                    Text("1-click convert, compress, or remove background.")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                HStack(spacing: 8) {
+                    Button("Choose Files…") { choose() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .keyboardShortcut(.defaultAction)
+
+                    if canPaste {
+                        Button {
+                            pasteFromClipboard()
+                        } label: {
+                            Label("Paste", systemImage: "doc.on.clipboard")
+                        }
+                        .controlSize(.regular)
+                        .help("Paste copied files or screenshot (⌘V)")
+                    }
+                }
+                .padding(.top, 2)
             }
-            .frame(maxWidth: .infinity, minHeight: 118)
+            .padding(.vertical, 18)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .fill(targeted ? Theme.Palette.accent.opacity(0.08) : Color.primary.opacity(0.025))
@@ -94,17 +299,30 @@ struct QuickConvertView: View {
                 RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .strokeBorder(
                         targeted ? Theme.Palette.accent : Theme.Palette.hairline,
-                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
+                        style: StrokeStyle(lineWidth: 1.5, dash: targeted ? [] : [6, 4])
                     )
             }
 
-            HStack(spacing: Theme.Space.sm) {
-                Button("Choose Files…") { choose() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                Text("or drag them here")
-                    .font(Theme.Text.caption)
-                    .foregroundStyle(.secondary)
+            if let recent = model.quickSummary ?? model.lastSummary, recent.converted > 0, !recent.undone {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Theme.Palette.success)
+                        .font(.caption)
+                    Text("Last: \(recent.converted) file\(recent.converted == 1 ? "" : "s") (\(recent.target))")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if !recent.outputs.isEmpty {
+                        Button("Finder") {
+                            let existing = recent.outputs.filter { FileManager.default.fileExists(atPath: $0.path) }
+                            if !existing.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(existing) }
+                        }
+                        .buttonStyle(.link)
+                        .font(Theme.Text.caption)
+                    }
+                }
+                .padding(.horizontal, 4)
             }
         }
     }
@@ -195,14 +413,12 @@ struct QuickConvertView: View {
     }
 
     private var totalSize: UInt64 {
-        state.urls.reduce(0) { total, url in
-            total + UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        }
+        state.cachedTotalSize
     }
 
     private func fileRow(_ url: URL) -> some View {
         HStack(spacing: 6) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+            Image(nsImage: state.cachedIcons[url] ?? NSWorkspace.shared.icon(forFile: url.path))
                 .resizable()
                 .frame(width: 16, height: 16)
                 .accessibilityHidden(true)
@@ -232,7 +448,7 @@ struct QuickConvertView: View {
             let summary = await model.quickRun(urls: urls, job: job)
             state.isStarting = false
             if let summary {
-                state.summary = summary
+                state.recordSummary(summary)
             } else {
                 state.error = "Couldn't convert these files. Try another action or open FileFormatter for details."
             }
@@ -245,6 +461,7 @@ struct QuickConvertView: View {
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
             let total = max(model.quickItems.count, 1)
             let done = model.quickItems.filter(\.status.isTerminal).count
+            let activePartial = model.quickItems.first(where: { $0.status == .converting })?.progress ?? 0
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
@@ -257,7 +474,7 @@ struct QuickConvertView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                ProgressView(value: Double(done), total: Double(total))
+                ProgressView(value: min(Double(total), Double(done) + activePartial), total: Double(total))
             }
 
             VStack(alignment: .leading, spacing: 5) {
@@ -269,6 +486,11 @@ struct QuickConvertView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 0)
+                        if item.status == .converting, let p = item.progress, p > 0, p < 1 {
+                            Text("\(Int((p * 100).rounded()))%")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 if model.quickItems.count > 6 {
@@ -361,10 +583,17 @@ struct QuickConvertView: View {
             }
 
             HStack(spacing: Theme.Space.md) {
-                Button("Copy") {
+                Button {
                     let existing = summary.outputs.filter { FileManager.default.fileExists(atPath: $0.path) }
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.writeObjects(existing as [NSURL])
+                    copiedFeedback = true
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(1500))
+                        copiedFeedback = false
+                    }
+                } label: {
+                    Label(copiedFeedback ? "Copied" : "Copy", systemImage: copiedFeedback ? "checkmark" : "doc.on.doc")
                 }
                 .disabled(summary.undone || summary.outputs.isEmpty)
                 .help("Copy the files, then paste into Mail, Slack or Finder")
@@ -437,9 +666,13 @@ struct QuickConvertView: View {
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, 2)
                     .contentShape(Rectangle())
+                    .onTapGesture {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
                     .onDrag { NSItemProvider(contentsOf: url) ?? NSItemProvider() }
-                    .help("Drag into any app")
+                    .help("Click to reveal in Finder · Drag into any app")
                 }
             }
             if done.count > 5 {
@@ -451,7 +684,14 @@ struct QuickConvertView: View {
     }
 
     private func sizeChange(from input: UInt64, to url: URL) -> String {
-        let output = UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        let output = state.cachedOutputSizes[url]
+            ?? UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        if input > 0, output < input {
+            let pct = Int(((1.0 - Double(output) / Double(input)) * 100).rounded())
+            if pct > 0 {
+                return "\(CompressPanel.format(output)) (\u{2212}\(pct)%)"
+            }
+        }
         return "\(CompressPanel.format(input)) → \(CompressPanel.format(output))"
     }
 
@@ -463,53 +703,6 @@ struct QuickConvertView: View {
             default:
                 nil
             }
-        }
-    }
-
-    // MARK: Footer
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if model.isRunning {
-                Text("Main window: converting \(model.completedCount) of \(model.totalToConvert)")
-                    .font(Theme.Text.caption)
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("Open FileFormatter") {
-                    NSApp.activate(ignoringOtherApps: true)
-                    if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {
-                        window.makeKeyAndOrderFront(nil)
-                    } else {
-                        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: .init())
-                    }
-                }
-                .buttonStyle(.borderless)
-
-                Spacer()
-
-                Menu {
-                    SettingsLink { Text("Settings…") }
-                    Button("Check for Updates…") { Updater.shared.checkNow() }
-                        .disabled(!Updater.shared.canCheck)
-                    if model.isRunning {
-                        Button("Stop Queue") { model.cancel() }
-                    } else if model.runnableCount > 0 {
-                        Button("Convert Queue") { model.startRun() }
-                    }
-                    Divider()
-                    Button("Quit FileFormatter") { NSApp.terminate(nil) }
-                } label: {
-                    Image(systemName: "gearshape")
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityLabel("Settings and quit")
-                .help("Settings and Quit")
-            }
-            .font(Theme.Text.caption)
         }
     }
 }

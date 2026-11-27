@@ -4,12 +4,36 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct DuplicatesView: View {
+    enum KeepStrategy: String, CaseIterable, Identifiable {
+        case first
+        case newest
+        case oldest
+        case shortestPath
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .first: "Keep first"
+            case .newest: "Keep newest"
+            case .oldest: "Keep oldest"
+            case .shortestPath: "Keep shortest path"
+            }
+        }
+    }
+
     @State private var groups: [DuplicateSet] = []
     @State private var scanning = false
+    @State private var scanTask: Task<Void, Never>?
     @State private var showImporter = false
     @State private var pendingGroup: DuplicateSet?
     @State private var scannedFolder: URL?
     @State private var status: Status?
+    @State private var keepStrategy: KeepStrategy = .first
+    @State private var customKeep: [String: URL] = [:]
+    @State private var expandedGroups: Set<String> = []
+    @State private var modifiedDates: [URL: Date] = [:]
+    @State private var isDropTargeted = false
 
     private let service = DuplicateService()
 
@@ -39,15 +63,32 @@ struct DuplicatesView: View {
         VStack(spacing: 0) {
             PageHeader("Duplicates", subtitle: subtitle) {
                 HStack(spacing: Theme.Space.sm) {
+                    if !groups.isEmpty, !scanning {
+                        Picker("Rule", selection: $keepStrategy) {
+                            ForEach(KeepStrategy.allCases) { rule in
+                                Text(rule.title).tag(rule)
+                            }
+                        }
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 155)
+                        .onChange(of: keepStrategy) { _, _ in
+                            customKeep.removeAll()
+                        }
+                    }
+
                     if scanning {
                         ProgressView()
                             .controlSize(.small)
+                        Button("Cancel") {
+                            scanTask?.cancel()
+                        }
                     }
 
                     if scannedFolder != nil, !scanning {
                         Button("Rescan") {
                             if let folder = scannedFolder {
-                                Task { await scan(folder) }
+                                startScan(folder)
                             }
                         }
                     }
@@ -66,6 +107,22 @@ struct DuplicatesView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                    .strokeBorder(Theme.Palette.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .padding(Theme.Space.md)
+                    .allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard !scanning, let folder = urls.first(where: { url in
+                var isDir: ObjCBool = false
+                return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+            }) else { return false }
+            startScan(folder)
+            return true
+        } isTargeted: { isDropTargeted = $0 }
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.folder],
@@ -74,7 +131,7 @@ struct DuplicatesView: View {
             switch result {
             case .success(let urls):
                 guard let folder = urls.first else { return }
-                Task { await scan(folder) }
+                startScan(folder)
             case .failure(let error):
                 status = Status(text: error.localizedDescription, tone: .danger)
             }
@@ -93,8 +150,8 @@ struct DuplicatesView: View {
             }
             Button("Cancel", role: .cancel) { pendingGroup = nil }
         } message: {
-            if let group = pendingGroup {
-                Text("The first copy is kept. \(group.paths.count - 1) other copies move to the Trash. You can restore them from the Trash.")
+            if let group = pendingGroup, let kept = keptURL(for: group) {
+                Text("\"\(kept.lastPathComponent)\" in \(kept.deletingLastPathComponent().lastPathComponent) is kept. \(group.paths.count - 1) other copies move to the Trash.")
             }
         }
     }
@@ -121,7 +178,7 @@ struct DuplicatesView: View {
             EmptyStatePanel(
                 systemImage: "square.on.square",
                 title: "Find duplicate files",
-                message: "Choose a folder to compare files by content, not name. The first copy of each set is always kept."
+                message: "Choose or drop a folder to compare files by content, not name. Choose which copy of each set to keep."
             ) {
                 Button("Choose Folder…") {
                     showImporter = true
@@ -140,7 +197,7 @@ struct DuplicatesView: View {
                     }
                     Button("Scan Again") {
                         if let folder = scannedFolder {
-                            Task { await scan(folder) }
+                            startScan(folder)
                         }
                     }
                 }
@@ -181,8 +238,33 @@ struct DuplicatesView: View {
         .padding(.bottom, Theme.Space.sm)
     }
 
+    private func keptURL(for group: DuplicateSet) -> URL? {
+        if let chosen = customKeep[group.id],
+           group.paths.contains(where: { $0.standardizedFileURL == chosen.standardizedFileURL }) {
+            return chosen
+        }
+        switch keepStrategy {
+        case .first:
+            return group.paths.first
+        case .newest:
+            return group.paths.max {
+                (modifiedDates[$0] ?? .distantPast) < (modifiedDates[$1] ?? .distantPast)
+            }
+        case .oldest:
+            return group.paths.min {
+                (modifiedDates[$0] ?? .distantFuture) < (modifiedDates[$1] ?? .distantFuture)
+            }
+        case .shortestPath:
+            return group.paths.min { $0.path.count < $1.path.count }
+        }
+    }
+
     private func groupRow(_ group: DuplicateSet) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+        let kept = keptURL(for: group)
+        let isExpanded = expandedGroups.contains(group.id)
+        let visiblePaths = isExpanded ? group.paths : Array(group.paths.prefix(4))
+
+        return VStack(alignment: .leading, spacing: Theme.Space.sm) {
             HStack(alignment: .center, spacing: Theme.Space.sm) {
                 IconTile(systemImage: "square.on.square", tone: .warning, size: 28)
                 VStack(alignment: .leading, spacing: 2) {
@@ -200,16 +282,21 @@ struct DuplicatesView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(group.paths.prefix(4)), id: \.self) { path in
+                ForEach(visiblePaths, id: \.self) { path in
+                    let isKept = path.standardizedFileURL == kept?.standardizedFileURL
                     HStack(spacing: 6) {
-                        if path.standardizedFileURL == group.paths.first?.standardizedFileURL {
+                        if isKept {
                             Badge(text: "Keep", systemImage: "checkmark", tone: .accent)
-                                .frame(width: 58, alignment: .leading)
+                                .frame(width: 62, alignment: .leading)
                         } else {
-                            Image(systemName: "doc")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 58, alignment: .leading)
+                            Button("Keep") {
+                                customKeep[group.id] = path
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 62, alignment: .leading)
+                            .help("Keep this copy instead")
                         }
 
                         Text(path.path)
@@ -228,29 +315,58 @@ struct DuplicatesView: View {
                     }
                 }
                 if group.paths.count > 4 {
-                    Text("and \(group.paths.count - 4) more…")
-                        .font(Theme.Text.caption)
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 64)
+                    Button(isExpanded ? "Show fewer" : "Show all \(group.paths.count) copies…") {
+                        if isExpanded {
+                            expandedGroups.remove(group.id)
+                        } else {
+                            expandedGroups.insert(group.id)
+                        }
+                    }
+                    .buttonStyle(.link)
+                    .font(Theme.Text.caption)
+                    .padding(.leading, 68)
                 }
             }
         }
         .padding(.vertical, 8)
     }
 
+    private func startScan(_ folder: URL) {
+        scanTask?.cancel()
+        scanTask = Task { await scan(folder) }
+    }
+
     private func scan(_ folder: URL) async {
         scanning = true
         status = nil
         groups = []
+        customKeep = [:]
+        expandedGroups = []
         scannedFolder = folder
         defer { scanning = false }
 
         do {
             let found = try await service.scan(folder: folder)
+            let dates = await Task.detached(priority: .utility) {
+                var map: [URL: Date] = [:]
+                for group in found {
+                    for url in group.paths {
+                        if let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
+                            map[url] = mtime
+                        }
+                    }
+                }
+                return map
+            }.value
+            guard !Task.isCancelled else { return }
+            modifiedDates = dates
             groups = found
             if found.isEmpty {
                 status = Status(text: "No byte-identical files in \(folder.lastPathComponent).", tone: .info)
             }
+        } catch is CancellationError {
+            scannedFolder = nil
+            status = Status(text: "Duplicate scan cancelled.", tone: .info)
         } catch {
             scannedFolder = nil
             status = Status(text: error.localizedDescription, tone: .danger)
@@ -258,9 +374,23 @@ struct DuplicatesView: View {
     }
 
     private func trashExtras(in group: DuplicateSet) async {
-        guard let keep = group.paths.first else { return }
+        guard let keep = keptURL(for: group) else { return }
         let result = await service.trashExtras(in: group, keeping: keep)
         groups.removeAll { $0.id == group.id }
+        customKeep[group.id] = nil
+        expandedGroups.remove(group.id)
+        if result.trashed > 0 {
+            let summary = RunSummary(
+                target: "Duplicates Cleanup",
+                outputs: [],
+                converted: result.trashed,
+                skipped: 1,
+                failed: result.failed,
+                inputBytes: group.byteSize * UInt64(group.paths.count),
+                outputBytes: group.byteSize
+            )
+            try? await RunJournal.shared.save(summary)
+        }
         status = Status(
             text: result.failed == 0
                 ? "\(result.trashed) file\(result.trashed == 1 ? "" : "s") moved to the Trash."

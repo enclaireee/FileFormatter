@@ -19,6 +19,10 @@ struct ContentView: View {
     @State private var showPDFTools = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var isQueueActiveWithFiles: Bool {
+        (selection ?? .queue) == .queue && !model.isEmpty
+    }
+
     private var importTypes: [UTType] {
         [
             .folder,
@@ -57,11 +61,11 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 detail
 
-                if showInspector {
+                if isQueueActiveWithFiles && showInspector {
                     Divider()
 
                     InspectorView(model: model)
-                        .frame(width: 330)
+                        .frame(width: 320)
                         .frame(maxHeight: .infinity)
                         .background(Theme.Palette.canvas)
                         .transition(.move(edge: .trailing))
@@ -89,40 +93,54 @@ struct ContentView: View {
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
-                        showInspector.toggle()
+                if isQueueActiveWithFiles {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                            showInspector.toggle()
+                        }
+                    } label: {
+                        Label("Format Options", systemImage: "sidebar.trailing")
                     }
-                } label: {
-                    Label("Inspector", systemImage: "sidebar.trailing")
+                    .keyboardShortcut("0", modifiers: [.command, .option])
+                    .help(showInspector ? "Hide format options (⌥⌘0)" : "Show format options (⌥⌘0)")
                 }
-                .keyboardShortcut("0", modifiers: [.command, .option])
-                .help(showInspector ? "Hide inspector (⌥⌘0)" : "Show inspector (⌥⌘0)")
 
                 Menu {
                     Button {
                         showImageTools = true
                     } label: {
-                        Label("Image Tools…", systemImage: "crop.rotate")
+                        Label("Image Tools (Rotate, Crop, Flip)…", systemImage: "crop.rotate")
                     }
                     Button {
                         showPDFTools = true
                     } label: {
-                        Label("PDF Tools…", systemImage: "doc.richtext")
+                        Label("PDF Tools (Organize, Stamp, Unlock)…", systemImage: "doc.richtext")
+                    }
+                    if !model.isEmpty {
+                        Divider()
+                        Button {
+                            model.showRename = true
+                        } label: {
+                            Label("Batch Rename…", systemImage: "character.cursor.ibeam")
+                        }
+                        .disabled(model.isRunning)
                     }
                 } label: {
                     Label("Tools", systemImage: "wrench.and.screwdriver")
                 }
                 .disabled(model.isBusy)
-                .help("Rotate, crop, organize PDFs, and more")
+                .help("Rotate, crop, organize PDFs, and batch rename")
 
-                Button {
-                    model.showImporter = true
-                } label: {
-                    Label("Add Files", systemImage: "plus")
+                if !model.isEmpty || (selection ?? .queue) != .queue {
+                    Button {
+                        selection = .queue
+                        model.showImporter = true
+                    } label: {
+                        Label("Add Files", systemImage: "plus")
+                    }
+                    .disabled(model.isRunning && model.pdfMode == .merge)
+                    .help("Add files or folders (⌘O)")
                 }
-                .disabled(model.isRunning)
-                .help("Add files or folders (⌘O)")
 
                 if model.isRunning {
                     Button(role: .cancel) {
@@ -130,9 +148,10 @@ struct ContentView: View {
                     } label: {
                         Label("Stop", systemImage: "stop.fill")
                     }
-                    .help("Stop after the current file (⌘.)")
-                } else {
+                    .help("Stop conversion (⌘.)")
+                } else if !model.isEmpty {
                     Button {
+                        selection = .queue
                         model.startRun()
                     } label: {
                         Label(convertTitle, systemImage: "play.fill")
@@ -151,6 +170,20 @@ struct ContentView: View {
         ) { result in
             switch result {
             case .success(let urls):
+                selection = .queue
+                model.addFiles(urls)
+            case .failure(let error):
+                model.present(error: error)
+            }
+        }
+        .fileImporter(
+            isPresented: $model.showFolderImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                selection = .queue
                 model.addFiles(urls)
             case .failure(let error):
                 model.present(error: error)
@@ -340,22 +373,46 @@ struct NoticeToast: View {
 
 struct BottomBar: View {
     @Bindable var model: AppModel
-    @Environment(\.openSettings) private var openSettings
+    @AppStorage(AppSettings.useFolder) private var useFolder = false
 
     private var finishedCount: Int {
-        model.items.filter { $0.status == .completed }.count
+        model.finishedCount
     }
 
     var body: some View {
         HStack(spacing: Theme.Space.sm) {
-            Button {
-                openSettings()
+            Menu {
+                Button {
+                    useFolder = false
+                } label: {
+                    if !useFolder { Label("Save next to originals", systemImage: "checkmark") }
+                    else { Text("Save next to originals") }
+                }
+                Button("Choose Output Folder…") {
+                    model.chooseOutputFolderInteractively()
+                }
+                if useFolder, let folder = AppSettings.outputFolder() {
+                    Divider()
+                    Button("Reveal \"\(folder.lastPathComponent)\" in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([folder])
+                    }
+                }
             } label: {
-                Label(model.destinationDescription, systemImage: "folder")
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Image(systemName: "folder")
+                    Text("Saves: \(model.destinationDescription)")
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .buttonStyle(.borderless)
-            .help("Change where converted files are saved")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Choose where converted files are saved")
+
+            Text("· Originals kept")
+                .foregroundStyle(.tertiary)
 
             Spacer(minLength: Theme.Space.md)
 
@@ -375,25 +432,19 @@ struct BottomBar: View {
             .disabled(model.isEmpty || model.isRunning)
             .help("Batch rename the files in the list")
 
-            Menu {
-                Button("Clear Finished") { model.clearFinished() }
-                    .disabled(model.isRunning || finishedCount == 0)
-                Button("Clear All", role: .destructive) { model.clearQueue() }
+            if finishedCount > 0 {
+                Button("Clear Done") { model.clearFinished() }
                     .disabled(model.isRunning)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Clear the list")
-            .accessibilityLabel("More queue actions")
+
+            Button("Clear All") { model.clearQueue() }
+                .disabled(model.isRunning)
+                .help("Clear every file from the queue")
         }
         .font(Theme.Text.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, Theme.Space.lg)
-        .frame(height: 40)
+        .frame(height: 38)
         .background(.bar)
         .overlay(alignment: .top) { Hairline() }
     }

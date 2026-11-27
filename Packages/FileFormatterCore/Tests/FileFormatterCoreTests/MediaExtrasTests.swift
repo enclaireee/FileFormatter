@@ -47,6 +47,26 @@ struct MediaExtrasTests {
         #expect(args(src, .webm, "h264").contains("-row-mt"))
     }
 
+    @Test func qualityAndBackgroundPriorityControlVideoEncoderFlags() throws {
+        let lowMP4 = MediaConverter.arguments(source: src, destination: dst, format: .mp4, quality: 0.35)
+        let highMP4 = MediaConverter.arguments(source: src, destination: dst, format: .mp4, quality: 0.95, background: true)
+        let lowQIndex = try #require(lowMP4.firstIndex(of: "-q:v"))
+        let highQIndex = try #require(highMP4.firstIndex(of: "-q:v"))
+        let lowQ = try #require(Int(lowMP4[lowQIndex + 1]))
+        let highQ = try #require(Int(highMP4[highQIndex + 1]))
+        #expect(highQ > lowQ)
+        #expect(!lowMP4.contains("-power_efficient"))
+        #expect(highMP4.contains("-power_efficient"))
+
+        let lowWebM = MediaConverter.arguments(source: src, destination: dst, format: .webm, quality: 0.35)
+        let highWebM = MediaConverter.arguments(source: src, destination: dst, format: .webm, quality: 0.95)
+        let lowCRFIndex = try #require(lowWebM.firstIndex(of: "-crf"))
+        let highCRFIndex = try #require(highWebM.firstIndex(of: "-crf"))
+        let lowCRF = try #require(Int(lowWebM[lowCRFIndex + 1]))
+        let highCRF = try #require(Int(highWebM[highCRFIndex + 1]))
+        #expect(highCRF < lowCRF)
+    }
+
     @Test func convertsToGifAndFitsSize() async throws {
         let locator = FFmpegLocator.discover()
         let ffmpeg = try #require(locator.ffmpegURL, "ffmpeg was not found.")

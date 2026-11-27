@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The likely actions for a set of files: one primary button, three tiles, the rest in "Other formats".
+/// The likely actions for a set of files: one primary Return-key CTA, plus a clean 2-column grid with "More…".
 /// Shared by the menu bar popover and (compact) the queue header.
 struct QuickActionRow: View {
     let urls: [URL]
@@ -9,46 +9,59 @@ struct QuickActionRow: View {
 
     var body: some View {
         let suggested = QuickAction.suggestions(for: urls)
-        let shown = Array(suggested.prefix(4))
-        let more = suggested.dropFirst(4) + QuickAction.otherFormats(for: urls).filter { !shown.contains($0) }
+        let primary = suggested.first
+        let secondaryLimit = (suggested.count > 4 || !QuickAction.otherFormats(for: urls).isEmpty) ? 3 : 4
+        let secondary = Array(suggested.dropFirst().prefix(secondaryLimit))
+        let shownSet = Set(([primary].compactMap { $0 }) + secondary)
+        let more = suggested.filter { !shownSet.contains($0) }
+            + QuickAction.otherFormats(for: urls).filter { !shownSet.contains($0) }
+
         Group {
             if compact {
                 FlowLayout(spacing: 6) {
-                    ForEach(Array(shown.enumerated()), id: \.element) { index, action in
-                        if index == 0 {
-                            button(action).buttonStyle(.borderedProminent)
-                        } else {
-                            button(action)
-                        }
+                    if let primary {
+                        button(primary).buttonStyle(.borderedProminent)
                     }
-                    otherMenu(Array(more))
+                    ForEach(secondary) { action in
+                        button(action)
+                    }
+                    otherMenu(more, fillTile: false)
                 }
                 .controlSize(.small)
             } else {
                 VStack(spacing: 8) {
-                    if let primary = shown.first {
+                    if let primary {
                         Button { run(primary) } label: {
-                            Label(primary.title, systemImage: primary.systemImage)
-                                .frame(maxWidth: .infinity)
+                            HStack(spacing: 8) {
+                                Image(systemName: primary.systemImage)
+                                    .font(.body.weight(.semibold))
+                                Text(primary.actionTitle)
+                                    .font(.body.weight(.semibold))
+                                Spacer(minLength: 4)
+                                Text("↩")
+                                    .font(.caption.weight(.semibold))
+                                    .opacity(0.75)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            }
+                            .padding(.vertical, 3)
+                            .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
                         .keyboardShortcut(.defaultAction)
+                        .help("\(primary.actionTitle) (Return)")
                     }
-                    HStack(spacing: 8) {
-                        ForEach(shown.dropFirst()) { action in
-                            Button { run(action) } label: {
-                                VStack(spacing: 4) {
-                                    Image(systemName: action.systemImage).font(.title3)
-                                    Text(action.title).font(.caption).lineLimit(1).minimumScaleFactor(0.8)
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                            }
-                            .help(action.title)
+
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 7), GridItem(.flexible(), spacing: 7)], spacing: 7) {
+                        ForEach(Array(secondary.enumerated()), id: \.element) { idx, action in
+                            tileButton(action, shortcutIndex: idx + 1)
+                        }
+                        if !more.isEmpty {
+                            otherMenu(more, fillTile: true)
                         }
                     }
-                    otherMenu(Array(more))
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -56,23 +69,88 @@ struct QuickActionRow: View {
         .accessibilityLabel("Quick actions")
     }
 
+    private func tileButton(_ action: QuickAction, shortcutIndex: Int) -> some View {
+        let key = KeyEquivalent(Character("\(shortcutIndex)"))
+        return Button { run(action) } label: {
+            HStack(spacing: 7) {
+                Image(systemName: action.systemImage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text(action.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(
+                Color.primary.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                    .strokeBorder(Theme.Palette.hairline.opacity(0.45), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(key, modifiers: .command)
+        .help("\(action.actionTitle) (⌘\(shortcutIndex))")
+    }
+
     private func button(_ action: QuickAction) -> some View {
         Button { run(action) } label: {
             Label(action.title, systemImage: action.systemImage).lineLimit(1)
         }
-        .help(action.title)
+        .help(action.actionTitle)
     }
 
     @ViewBuilder
-    private func otherMenu(_ actions: [QuickAction]) -> some View {
+    private func otherMenu(_ actions: [QuickAction], fillTile: Bool) -> some View {
         if !actions.isEmpty {
-            Menu("Other formats") {
-                ForEach(actions) { action in
-                    Button(action.title) { run(action) }
+            if fillTile {
+                Menu {
+                    ForEach(actions) { action in
+                        Button {
+                            run(action)
+                        } label: {
+                            Label(action.title, systemImage: action.systemImage)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text("More…")
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .background(
+                        Color.primary.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                            .strokeBorder(Theme.Palette.hairline.opacity(0.45), lineWidth: 1)
+                    }
                 }
+                .menuStyle(.borderlessButton)
+            } else {
+                Menu("More formats") {
+                    ForEach(actions) { action in
+                        Button(action.title) { run(action) }
+                    }
+                }
+                .menuStyle(.button)
+                .fixedSize()
             }
-            .menuStyle(.button)
-            .fixedSize()
         }
     }
 

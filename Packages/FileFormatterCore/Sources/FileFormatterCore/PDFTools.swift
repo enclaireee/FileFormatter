@@ -4,41 +4,66 @@ import CoreText
 import Foundation
 import ImageIO
 import PDFKit
+import Synchronization
 
 public enum PDFTools {
+    private static let splitCache = Mutex<(url: URL, modified: Date?, document: PDFDocument)?>(nil)
+
+    public static func evictCache() {
+        splitCache.withLock { $0 = nil }
+    }
+
     public static func merge(sources: [URL], destination: URL) throws {
         guard !sources.isEmpty else {
             throw ConversionError.unsupportedTarget("Merge needs at least one file")
         }
         let output = PDFDocument()
         for url in sources {
-            let name = url.lastPathComponent
-            if let document = PDFDocument(url: url) {
-                if document.isLocked {
-                    throw ConversionError.cannotReadSource("\(name) is password-protected")
+            try Task.checkCancellation()
+            try autoreleasepool {
+                let name = url.lastPathComponent
+                if let document = PDFDocument(url: url) {
+                    if document.isLocked {
+                        throw ConversionError.cannotReadSource("\(name) is password-protected")
+                    }
+                    for index in 0..<document.pageCount {
+                        guard let page = document.page(at: index) else { continue }
+                        output.insert(page, at: output.pageCount)
+                    }
+                } else {
+                    output.insert(try imagePage(url), at: output.pageCount)
                 }
-                for index in 0..<document.pageCount {
-                    guard let page = document.page(at: index) else { continue }
-                    output.insert(page, at: output.pageCount)
-                }
-            } else {
-                output.insert(try imagePage(url), at: output.pageCount)
             }
         }
         try write(output, to: destination)
     }
 
     public static func extractPage(source: URL, pageNumber: Int, destination: URL) throws {
+        try Task.checkCancellation()
         let name = source.lastPathComponent
-        guard let document = PDFDocument(url: source) else {
-            throw ConversionError.cannotReadSource(name)
-        }
-        if document.isLocked { throw ConversionError.cannotReadSource("\(name) is password-protected") }
-        guard pageNumber >= 1, pageNumber <= document.pageCount, let page = document.page(at: pageNumber - 1) else {
-            throw ConversionError.cannotReadSource("\(name) page \(pageNumber)")
+        let modified = try? source.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let copiedPage: PDFPage = try splitCache.withLock { cached in
+            if cached?.url != source || cached?.modified != modified {
+                guard let document = PDFDocument(url: source) else {
+                    throw ConversionError.cannotReadSource(name)
+                }
+                cached = (source, modified, document)
+            }
+            guard let document = cached?.document else {
+                throw ConversionError.cannotReadSource(name)
+            }
+            if document.isLocked {
+                throw ConversionError.cannotReadSource("\(name) is password-protected")
+            }
+            guard pageNumber >= 1, pageNumber <= document.pageCount,
+                  let page = document.page(at: pageNumber - 1),
+                  let copy = page.copy() as? PDFPage else {
+                throw ConversionError.cannotReadSource("\(name) page \(pageNumber)")
+            }
+            return copy
         }
         let output = PDFDocument()
-        output.insert(page, at: 0)
+        output.insert(copiedPage, at: 0)
         try write(output, to: destination)
     }
 
@@ -85,6 +110,8 @@ public enum PDFTools {
     /// One pass through the system "Reduce File Size" Quartz filter, with its image settings overridden.
     private static func redraw(_ source: URL, for destination: URL, quality: Double?, maxPixelSize: Int?) throws -> URL {
         let temporary = temporaryURL(for: destination)
+        var succeeded = false
+        defer { if !succeeded { try? FileManager.default.removeItem(at: temporary) } }
         let filterURL = URL(fileURLWithPath: "/System/Library/Filters/Reduce File Size.qfilter")
         var properties = NSDictionary(contentsOf: filterURL) as? [String: Any] ?? [:]
         if quality != nil || maxPixelSize != nil,
@@ -107,6 +134,7 @@ public enum PDFTools {
         }
         filter.apply(to: context)
         for index in 1...max(pdf.numberOfPages, 1) {
+            try Task.checkCancellation()
             guard let page = pdf.page(at: index) else { continue }
             // Drains each page's decoded and recompressed images instead of holding them all until closePDF.
             autoreleasepool {
@@ -119,6 +147,7 @@ public enum PDFTools {
         }
         context.closePDF()
         filter.remove(from: context)
+        succeeded = true
         return temporary
     }
 
@@ -210,13 +239,16 @@ public enum PDFTools {
 
     /// Draws each page into a same-sized new page, keeping text and vectors rather than rasterizing.
     private static func resize(_ document: PDFDocument, to size: CGSize, destination: URL) throws {
+        let temporary = temporaryURL(for: destination)
+        defer { try? FileManager.default.removeItem(at: temporary) }
         let margin: CGFloat = 18
         var box = CGRect(origin: .zero, size: size)
-        guard let context = CGContext(destination as CFURL, mediaBox: &box, nil) else {
+        guard let context = CGContext(temporary as CFURL, mediaBox: &box, nil) else {
             throw ConversionError.cannotCreateDestination(destination.lastPathComponent)
         }
 
         for index in 0..<document.pageCount {
+            try Task.checkCancellation()
             guard let page = document.page(at: index) else { continue }
             autoreleasepool {
                 let pageInfo = [kCGPDFContextMediaBox as String: NSValue(rect: box)] as CFDictionary
@@ -242,6 +274,7 @@ public enum PDFTools {
             }
         }
         context.closePDF()
+        try ImageConverter.install(temporary: temporary, at: destination)
     }
 
     private static func stamp(
@@ -250,13 +283,16 @@ public enum PDFTools {
         watermark: String,
         destination: URL
     ) throws {
+        let temporary = temporaryURL(for: destination)
+        defer { try? FileManager.default.removeItem(at: temporary) }
         var box = document.page(at: 0)?.bounds(for: .mediaBox) ?? CGRect(x: 0, y: 0, width: 612, height: 792)
-        guard let context = CGContext(destination as CFURL, mediaBox: &box, nil) else {
+        guard let context = CGContext(temporary as CFURL, mediaBox: &box, nil) else {
             throw ConversionError.cannotCreateDestination(destination.lastPathComponent)
         }
         let total = document.pageCount
 
         for index in 0..<total {
+            try Task.checkCancellation()
             guard let page = document.page(at: index) else { continue }
             autoreleasepool {
                 let bounds = page.bounds(for: .mediaBox)
@@ -276,6 +312,7 @@ public enum PDFTools {
             }
         }
         context.closePDF()
+        try ImageConverter.install(temporary: temporary, at: destination)
     }
 
     private static func drawPageNumber(_ number: Int, of total: Int, in page: CGRect, context: CGContext) {
@@ -329,11 +366,14 @@ public enum PDFTools {
     }
 
     private static func draw(_ document: PDFDocument, to destination: URL, options: CFDictionary?) throws {
+        let temporary = temporaryURL(for: destination)
+        defer { try? FileManager.default.removeItem(at: temporary) }
         var box = document.page(at: 0)?.bounds(for: .mediaBox) ?? CGRect(x: 0, y: 0, width: 612, height: 792)
-        guard let context = CGContext(destination as CFURL, mediaBox: &box, options) else {
+        guard let context = CGContext(temporary as CFURL, mediaBox: &box, options) else {
             throw ConversionError.cannotCreateDestination(destination.lastPathComponent)
         }
         for index in 0..<document.pageCount {
+            try Task.checkCancellation()
             guard let page = document.page(at: index) else { continue }
             autoreleasepool {
                 let bounds = page.bounds(for: .mediaBox)
@@ -346,6 +386,111 @@ public enum PDFTools {
             }
         }
         context.closePDF()
+        try ImageConverter.install(temporary: temporary, at: destination)
+    }
+
+    /// Renders a live thumbnail of the first output page with the requested PDF tool applied in memory.
+    public static func renderPreview(
+        source: URL,
+        tool: PDFToolRequest,
+        maxSize: NSSize = NSSize(width: 300, height: 360)
+    ) -> (image: NSImage?, pageCount: Int, isLocked: Bool) {
+        guard let document = PDFDocument(url: source) else {
+            return (nil, 0, false)
+        }
+        if document.isLocked {
+            let unlockPassword = tool.kind == .protect ? tool.sourcePassword : tool.password
+            if unlockPassword.isEmpty || !document.unlock(withPassword: unlockPassword) {
+                return (nil, 0, true)
+            }
+        }
+        let total = document.pageCount
+        guard total > 0 else { return (nil, 0, false) }
+
+        var previewIndex = 0
+        var survivingCount = total
+        if tool.kind == .organize {
+            let removed = Set(tool.deletePages)
+            var indices = (tool.pageOrder.isEmpty ? Array(1...total) : tool.pageOrder)
+                .filter { !removed.contains($0) && (1...total).contains($0) }
+            if tool.reversePages { indices.reverse() }
+            if let first = indices.first {
+                previewIndex = first - 1
+                survivingCount = indices.count
+            }
+        }
+
+        guard let sourcePage = document.page(at: previewIndex) else {
+            return (nil, total, false)
+        }
+
+        switch tool.kind {
+        case .rotate:
+            if let copy = sourcePage.copy() as? PDFPage {
+                copy.rotation = ((copy.rotation + tool.rotation) % 360 + 360) % 360
+                let previewDoc = PDFDocument()
+                previewDoc.insert(copy, at: 0)
+                return (copy.thumbnail(of: maxSize, for: .cropBox), total, false)
+            }
+            return (sourcePage.thumbnail(of: maxSize, for: .cropBox), total, false)
+
+        case .pageSize:
+            let targetSize = tool.pageSize.size
+            let margin: CGFloat = 18
+            var box = CGRect(origin: .zero, size: targetSize)
+            let data = NSMutableData()
+            guard let consumer = CGDataConsumer(data: data as CFMutableData),
+                  let context = CGContext(consumer: consumer, mediaBox: &box, nil) else {
+                return (sourcePage.thumbnail(of: maxSize, for: .cropBox), total, false)
+            }
+            context.beginPDFPage([kCGPDFContextMediaBox as String: NSValue(rect: box)] as CFDictionary)
+            let sourceBounds = sourcePage.bounds(for: .mediaBox)
+            let quarterTurn = abs(sourcePage.rotation % 180) == 90
+            let visual = quarterTurn
+                ? CGSize(width: sourceBounds.height, height: sourceBounds.width)
+                : sourceBounds.size
+            let scale = min(
+                (targetSize.width - margin * 2) / max(visual.width, 1),
+                (targetSize.height - margin * 2) / max(visual.height, 1)
+            )
+            context.saveGState()
+            context.translateBy(
+                x: (targetSize.width - visual.width * scale) / 2,
+                y: (targetSize.height - visual.height * scale) / 2
+            )
+            context.scaleBy(x: scale, y: scale)
+            sourcePage.draw(with: .mediaBox, to: context)
+            context.restoreGState()
+            context.endPDFPage()
+            context.closePDF()
+            let rendered = PDFDocument(data: data as Data)?.page(at: 0)?.thumbnail(of: maxSize, for: .mediaBox)
+            return (rendered, total, false)
+
+        case .stamp:
+            var bounds = sourcePage.bounds(for: .mediaBox)
+            let data = NSMutableData()
+            guard let consumer = CGDataConsumer(data: data as CFMutableData),
+                  let context = CGContext(consumer: consumer, mediaBox: &bounds, nil) else {
+                return (sourcePage.thumbnail(of: maxSize, for: .cropBox), total, false)
+            }
+            context.beginPDFPage([kCGPDFContextMediaBox as String: NSValue(rect: bounds)] as CFDictionary)
+            context.saveGState()
+            sourcePage.draw(with: .mediaBox, to: context)
+            context.restoreGState()
+            if !tool.watermark.isEmpty {
+                drawWatermark(tool.watermark, in: bounds, context: context)
+            }
+            if tool.pageNumbers {
+                drawPageNumber(1, of: survivingCount, in: bounds, context: context)
+            }
+            context.endPDFPage()
+            context.closePDF()
+            let rendered = PDFDocument(data: data as Data)?.page(at: 0)?.thumbnail(of: maxSize, for: .mediaBox)
+            return (rendered, total, false)
+
+        default:
+            return (sourcePage.thumbnail(of: maxSize, for: .cropBox), total, false)
+        }
     }
 
     private static func writeText(_ document: PDFDocument, to destination: URL, target: ConversionTarget) throws {
@@ -400,13 +545,15 @@ public enum PDFTools {
 
     private static func imagePage(_ url: URL) throws -> PDFPage {
         let name = url.lastPathComponent
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+        let uncached = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, uncached),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, uncached) as? [CFString: Any],
               let w = props[kCGImagePropertyPixelWidth] as? Int,
               let h = props[kCGImagePropertyPixelHeight] as? Int,
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                   kCGImageSourceCreateThumbnailWithTransform: true,
                   kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceShouldCache: false,
                   kCGImageSourceThumbnailMaxPixelSize: max(w, h),
               ] as CFDictionary)
         else { throw ConversionError.cannotReadSource(name) }

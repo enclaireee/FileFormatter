@@ -11,16 +11,17 @@ final class StatusItemController: NSObject, NSWindowDelegate, NSDraggingDestinat
     private let shelf = DropShelf()
     private var item: NSStatusItem?
     private var clickMonitors: [Any] = []
-    private var dragged = false
+    private var downLocation: NSPoint?
+    private var downDragCount = 0
+    private var wasBusy = false
+    private var showCheckmarkUntil: Date?
 
     func start() {
         guard item == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.item = item
         if let button = item.button {
-            let image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "FileFormatter")
-            image?.isTemplate = true
-            button.image = image
+            button.image = idleIcon()
             button.target = self
             button.action = #selector(toggle)
             // The status bar window forwards dragging messages to its delegate; sturdier than an overlay view.
@@ -44,6 +45,90 @@ final class StatusItemController: NSObject, NSWindowDelegate, NSDraggingDestinat
         shelf.start()
         HotKey.shared.onPress = { [weak self] in self?.hotkeyPressed() }
         HotKey.shared.apply()
+        observeProgress()
+    }
+
+    private func observeProgress() {
+        withObservationTracking {
+            let model = AppModel.shared
+            let busy = model.isRunning || model.isQuickRunning
+            let fraction: Double
+            if model.isRunning {
+                fraction = model.progress
+            } else if model.isQuickRunning {
+                let total = max(model.quickItems.count, 1)
+                let done = model.quickItems.filter(\.status.isTerminal).count
+                let partial = model.quickItems.first(where: { $0.status == .converting })?.progress ?? 0
+                fraction = min(1.0, (Double(done) + partial) / Double(total))
+            } else {
+                fraction = 0
+            }
+            updateStatusIcon(busy: busy, progress: fraction)
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.observeProgress()
+            }
+        }
+    }
+
+    private func updateStatusIcon(busy: Bool, progress: Double) {
+        guard let button = item?.button else { return }
+        if busy {
+            wasBusy = true
+            showCheckmarkUntil = nil
+            button.image = progressRingIcon(progress: progress)
+            return
+        }
+        if wasBusy {
+            wasBusy = false
+            let deadline = Date().addingTimeInterval(2.0)
+            showCheckmarkUntil = deadline
+            let checkmark = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Conversion finished")
+            checkmark?.isTemplate = true
+            button.image = checkmark
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, let until = self.showCheckmarkUntil, Date() >= until, !AppModel.shared.isBusy else { return }
+                self.showCheckmarkUntil = nil
+                self.item?.button?.image = self.idleIcon()
+            }
+            return
+        }
+        if showCheckmarkUntil == nil {
+            button.image = idleIcon()
+        }
+    }
+
+    private func idleIcon() -> NSImage? {
+        let image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "FileFormatter")
+        image?.isTemplate = true
+        return image
+    }
+
+    private func progressRingIcon(progress: Double) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let img = NSImage(size: size, flipped: false) { rect in
+            let center = NSPoint(x: rect.midX, y: rect.midY)
+            let radius: CGFloat = 6.8
+            NSColor.black.withAlphaComponent(0.28).setStroke()
+            let track = NSBezierPath()
+            track.lineWidth = 2.1
+            track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
+            track.stroke()
+
+            let clamped = max(0.08, min(1.0, progress))
+            let startAngle: CGFloat = 90
+            let endAngle: CGFloat = 90 - CGFloat(clamped) * 360
+            NSColor.black.setStroke()
+            let arc = NSBezierPath()
+            arc.lineWidth = 2.1
+            arc.lineCapStyle = .round
+            arc.appendArc(withCenter: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: true)
+            arc.stroke()
+            return true
+        }
+        img.isTemplate = true
+        return img
     }
 
     private func hotkeyPressed() {
@@ -74,15 +159,23 @@ final class StatusItemController: NSObject, NSWindowDelegate, NSDraggingDestinat
 
     func popoverDidShow(_ notification: Notification) {
         // A click elsewhere closes the popover; a drag that starts elsewhere (to drop files here) does not.
-        let events: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseUp]
+        // Avoids monitoring .leftMouseDragged so cursor movement never wakes the process at 120 Hz.
+        let events: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .leftMouseUp, .rightMouseUp]
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { [weak self] event in
             let type = event.type
             MainActor.assumeIsolated {
                 guard let self else { return }
                 switch type {
-                case .leftMouseDown, .rightMouseDown: self.dragged = false
-                case .leftMouseDragged: self.dragged = true
-                default: if !self.dragged { self.popover.performClose(nil) }
+                case .leftMouseDown, .rightMouseDown:
+                    self.downLocation = NSEvent.mouseLocation
+                    self.downDragCount = NSPasteboard(name: .drag).changeCount
+                default:
+                    let now = NSEvent.mouseLocation
+                    let moved = self.downLocation.map { hypot(now.x - $0.x, now.y - $0.y) > 8 } ?? false
+                    let startedFileDrag = NSPasteboard(name: .drag).changeCount != self.downDragCount
+                    if !moved && !startedFileDrag {
+                        self.popover.performClose(nil)
+                    }
                 }
             }
         }) { clickMonitors.append(monitor) }

@@ -9,6 +9,10 @@ enum PDFPageRenderer {
     // Rendering runs under the lock (PDFDocument is not thread-safe); a per-document cache if mixed PDFs ever queue up.
     private static let cached = Mutex<(url: URL, modified: Date?, document: PDFDocument)?>(nil)
 
+    static func evictCache() {
+        cached.withLock { $0 = nil }
+    }
+
     static func render(source: URL, pageNumber: Int, scale: CGFloat = 2.0) throws -> CGImage {
         let modified = try? source.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         return try cached.withLock { cached in

@@ -4,8 +4,9 @@
 //! hardware codecs, and owns the UI; Rust owns the deterministic, testable planning layer.
 
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 uniffi::setup_scaffolding!();
 
@@ -68,19 +69,38 @@ pub struct Plan {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlanTargets {
+    pub image: String,
+    pub data: String,
+    pub document: String,
+    pub audio: String,
+    pub video: String,
+}
+
 #[uniffi::export]
 pub fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Opens `path` once to inspect its file descriptor metadata and magic header in a single pass.
+fn inspect_source(path: &Path) -> Option<(u64, FileKind)> {
+    let mut file = fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let mut header = [0u8; 32];
+    let read = file.read(&mut header).unwrap_or(0);
+    let kind = detect_kind_from_header(path, &header[..read]);
+    Some((metadata.len(), kind))
+}
+
 #[uniffi::export]
 pub fn detect_file(path: String) -> Result<FileInfo, CoreError> {
     let url = Path::new(&path);
-    let metadata = fs::metadata(url).map_err(|_| CoreError::NotFound { path: path.clone() })?;
-    if !metadata.is_file() {
-        return Err(CoreError::NotFound { path });
-    }
-    let kind = detect_kind(url);
+    let (byte_size, kind) =
+        inspect_source(url).ok_or_else(|| CoreError::NotFound { path: path.clone() })?;
     let file_name = url
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -89,8 +109,60 @@ pub fn detect_file(path: String) -> Result<FileInfo, CoreError> {
         path,
         file_name,
         kind,
-        byte_size: metadata.len(),
+        byte_size,
     })
+}
+
+/// Strips a leading UTF-8 BOM (`EF BB BF`) from a byte stream without buffering the whole file.
+struct StripBomReader<R> {
+    inner: R,
+    prefix: [u8; 3],
+    prefix_pos: usize,
+    prefix_len: usize,
+    checked: bool,
+}
+
+impl<R: Read> StripBomReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            prefix: [0; 3],
+            prefix_pos: 0,
+            prefix_len: 0,
+            checked: false,
+        }
+    }
+}
+
+impl<R: Read> Read for StripBomReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if !self.checked {
+            self.checked = true;
+            let mut filled = 0;
+            while filled < 3 {
+                let n = self.inner.read(&mut self.prefix[filled..3])?;
+                if n == 0 {
+                    break;
+                }
+                filled += n;
+            }
+            if filled == 3 && self.prefix == [0xEF, 0xBB, 0xBF] {
+                self.prefix_pos = 0;
+                self.prefix_len = 0;
+            } else {
+                self.prefix_pos = 0;
+                self.prefix_len = filled;
+            }
+        }
+        if self.prefix_pos < self.prefix_len {
+            let available = self.prefix_len - self.prefix_pos;
+            let to_copy = available.min(buf.len());
+            buf[..to_copy].copy_from_slice(&self.prefix[self.prefix_pos..self.prefix_pos + to_copy]);
+            self.prefix_pos += to_copy;
+            return Ok(to_copy);
+        }
+        self.inner.read(buf)
+    }
 }
 
 #[uniffi::export]
@@ -108,6 +180,13 @@ pub fn convert_data(
         });
     }
 
+    // Direct streaming fast-path for CSV/TSV <-> CSV/TSV without building a JSON DOM.
+    if matches!(source.as_str(), "csv" | "tsv") && matches!(target.as_str(), "csv" | "tsv") {
+        let in_delim = if source == "tsv" { b'\t' } else { b',' };
+        let out_delim = if target == "tsv" { b'\t' } else { b',' };
+        return stream_delimited(Path::new(&input_path), Path::new(&output_path), in_delim, out_delim);
+    }
+
     let value = match source.as_str() {
         // Tabular targets hold one sheet: take the first non-empty one in workbook order.
         "xlsx" | "xls" => xlsx_to_json(
@@ -115,17 +194,29 @@ pub fn convert_data(
             matches!(target.as_str(), "csv" | "tsv" | "xlsx"),
         )
         .map_err(conversion_error)?,
+        "json" => {
+            let file = fs::File::open(&input_path).map_err(|_| CoreError::Io {
+                path: input_path.clone(),
+            })?;
+            let reader = StripBomReader::new(BufReader::new(file));
+            serde_json::from_reader(reader).map_err(conversion_error)?
+        }
+        "csv" | "tsv" => {
+            let file = fs::File::open(&input_path).map_err(|_| CoreError::Io {
+                path: input_path.clone(),
+            })?;
+            let delim = if source == "tsv" { b'\t' } else { b',' };
+            csv_reader_to_json(StripBomReader::new(BufReader::new(file)), delim)
+                .map_err(conversion_error)?
+        }
         _ => {
             let input = fs::read_to_string(&input_path).map_err(|_| CoreError::Io {
                 path: input_path.clone(),
             })?;
             let input = input.trim_start_matches('\u{feff}');
             match source.as_str() {
-                "json" => serde_json::from_str(input).map_err(conversion_error)?,
                 "yaml" | "yml" => serde_yaml::from_str(input).map_err(conversion_error)?,
                 "toml" => toml::from_str(input).map_err(conversion_error)?,
-                "csv" => csv_to_json(input, b',').map_err(conversion_error)?,
-                "tsv" => csv_to_json(input, b'\t').map_err(conversion_error)?,
                 other => {
                     return Err(CoreError::UnsupportedTarget {
                         extension: other.to_string(),
@@ -135,26 +226,43 @@ pub fn convert_data(
         }
     };
 
-    let output = match target.as_str() {
-        "json" => serde_json::to_string_pretty(&value).map_err(conversion_error)? + "\n",
-        "yaml" => serde_yaml::to_string(&value).map_err(conversion_error)?,
-        "toml" => toml::to_string_pretty(&value).map_err(conversion_error)?,
-        "csv" => json_to_csv(&value, b',').map_err(conversion_error)?,
-        "tsv" => json_to_csv(&value, b'\t').map_err(conversion_error)?,
+    match target.as_str() {
+        "json" => {
+            let file = fs::File::create(&output_path).map_err(|_| CoreError::Io {
+                path: output_path.clone(),
+            })?;
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, &value).map_err(conversion_error)?;
+            writer.write_all(b"\n").map_err(|_| CoreError::Io {
+                path: output_path.clone(),
+            })?;
+            writer.flush().map_err(|_| CoreError::Io { path: output_path })
+        }
+        "csv" | "tsv" => {
+            let delim = if target == "tsv" { b'\t' } else { b',' };
+            let file = fs::File::create(&output_path).map_err(|_| CoreError::Io {
+                path: output_path.clone(),
+            })?;
+            let mut writer = BufWriter::new(file);
+            json_to_csv_writer(&value, delim, &mut writer).map_err(conversion_error)?;
+            writer.flush().map_err(|_| CoreError::Io { path: output_path })
+        }
         "xlsx" => {
             json_to_xlsx(&value, Path::new(&output_path)).map_err(conversion_error)?;
-            return Ok(());
+            Ok(())
         }
-        other => {
-            return Err(CoreError::UnsupportedTarget {
-                extension: other.to_string(),
-            })
+        "yaml" => {
+            let output = serde_yaml::to_string(&value).map_err(conversion_error)?;
+            fs::write(&output_path, output).map_err(|_| CoreError::Io { path: output_path })
         }
-    };
-
-    fs::write(&output_path, output).map_err(|_| CoreError::Io {
-        path: output_path,
-    })
+        "toml" => {
+            let output = toml::to_string_pretty(&value).map_err(conversion_error)?;
+            fs::write(&output_path, output).map_err(|_| CoreError::Io { path: output_path })
+        }
+        other => Err(CoreError::UnsupportedTarget {
+            extension: other.to_string(),
+        }),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -171,23 +279,79 @@ pub struct DuplicateGroup {
     pub paths: Vec<String>,
 }
 
+fn parallel_map<T, R, F>(items: &[T], min_parallel: usize, f: F) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(&T) -> R + Sync,
+{
+    let len = items.len();
+    if len == 0 {
+        return Vec::new();
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8);
+    if workers <= 1 || len < min_parallel {
+        return items.iter().map(f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let mut slots: Vec<Option<R>> = (0..len).map(|_| None).collect();
+    let slots_ptr = slots.as_mut_slice();
+    // Split cleanly by having each worker collect (index, R) and scatter at the end without unsafe!
+    let _ = slots_ptr;
+    let batches: Vec<Vec<(usize, R)>> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let next_ref = &next;
+            let f_ref = &f;
+            handles.push(scope.spawn(move || {
+                let mut local = Vec::new();
+                loop {
+                    let idx = next_ref.fetch_add(1, Ordering::Relaxed);
+                    if idx >= len {
+                        break;
+                    }
+                    local.push((idx, f_ref(&items[idx])));
+                }
+                local
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+    });
+    for batch in batches {
+        for (idx, value) in batch {
+            slots[idx] = Some(value);
+        }
+    }
+    slots.into_iter().flatten().collect()
+}
+
 #[uniffi::export]
 pub fn hash_files(paths: Vec<String>) -> Vec<FileHash> {
-    let mut hashes = Vec::new();
-    for path in paths {
-        let Ok(metadata) = fs::metadata(&path) else { continue };
-        if !metadata.is_file() { continue }
-        let Some(hash) = hash_file(Path::new(&path), None) else { continue };
-        hashes.push(FileHash { path, hash, byte_size: metadata.len() });
-    }
-    hashes
+    parallel_map(&paths, 4, |path| {
+        let metadata = fs::metadata(path).ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        let hash = hash_file(Path::new(path), None)?;
+        Some(FileHash {
+            path: path.clone(),
+            hash,
+            byte_size: metadata.len(),
+        })
+    })
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// BLAKE3 of the whole file, or of its first `limit` bytes.
 fn hash_file(path: &Path, limit: Option<u64>) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let capacity = limit.unwrap_or(1 << 20).min(1 << 20) as usize;
-    let mut reader = std::io::BufReader::with_capacity(capacity, file).take(limit.unwrap_or(u64::MAX));
+    let mut reader = BufReader::with_capacity(capacity, file).take(limit.unwrap_or(u64::MAX));
     let mut hasher = blake3::Hasher::new();
     std::io::copy(&mut reader, &mut hasher).ok()?;
     Some(hasher.finalize().to_hex().to_string())
@@ -199,34 +363,78 @@ const DUPLICATE_PREFIX: u64 = 64 * 1024;
 pub fn find_duplicates(paths: Vec<String>) -> Vec<DuplicateGroup> {
     use std::collections::HashMap;
     // Only same-size files can match, and most differ in the first 64 KiB: full hashes are the last resort.
-    let mut by_size: HashMap<u64, Vec<String>> = HashMap::new();
-    for path in paths {
-        let Ok(metadata) = fs::metadata(&path) else { continue };
-        if !metadata.is_file() || metadata.len() == 0 { continue }
-        by_size.entry(metadata.len()).or_default().push(path);
+    let sized = parallel_map(&paths, 32, |path| {
+        let metadata = fs::metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return None;
+        }
+        Some(metadata.len())
+    });
+
+    let mut by_size: HashMap<u64, Vec<(usize, String)>> = HashMap::new();
+    for (index, (path, len_opt)) in paths.into_iter().zip(sized).enumerate() {
+        if let Some(len) = len_opt {
+            by_size.entry(len).or_default().push((index, path));
+        }
     }
-    let group = |paths: Vec<String>, limit: Option<u64>| -> Vec<(String, Vec<String>)> {
-        let mut by_hash: HashMap<String, Vec<String>> = HashMap::new();
-        for path in paths {
-            if let Some(hash) = hash_file(Path::new(&path), limit) {
-                by_hash.entry(hash).or_default().push(path);
+
+    let hash_candidates = |candidates: Vec<(u64, usize, String)>, limit: Option<u64>| {
+        let hashed = parallel_map(&candidates, 4, |(_, _, path)| hash_file(Path::new(path), limit));
+        let mut grouped: HashMap<(u64, String), Vec<(usize, String)>> = HashMap::new();
+        for ((byte_size, index, path), hash_opt) in candidates.into_iter().zip(hashed) {
+            if let Some(hash) = hash_opt {
+                grouped.entry((byte_size, hash)).or_default().push((index, path));
             }
         }
-        by_hash.into_iter().filter(|(_, paths)| paths.len() > 1).collect()
+        grouped
+            .into_iter()
+            .filter(|(_, entries)| entries.len() > 1)
+            .collect::<Vec<_>>()
     };
-    let mut groups = Vec::new();
-    for (byte_size, paths) in by_size {
-        if paths.len() < 2 { continue }
-        // A file no longer than the prefix is fully hashed by the first pass.
-        let matches = if byte_size <= DUPLICATE_PREFIX {
-            group(paths, None)
+
+    let mut small_candidates = Vec::new();
+    let mut large_candidates = Vec::new();
+    for (byte_size, entries) in by_size {
+        if entries.len() < 2 {
+            continue;
+        }
+        let target = if byte_size <= DUPLICATE_PREFIX {
+            &mut small_candidates
         } else {
-            group(paths, Some(DUPLICATE_PREFIX)).into_iter().flat_map(|(_, paths)| group(paths, None)).collect()
+            &mut large_candidates
         };
-        for (hash, paths) in matches {
-            groups.push(DuplicateGroup { hash, byte_size, paths });
+        for (index, path) in entries {
+            target.push((byte_size, index, path));
         }
     }
+
+    let mut groups = Vec::new();
+    for ((byte_size, hash), mut entries) in hash_candidates(small_candidates, None) {
+        entries.sort_by_key(|(index, _)| *index);
+        groups.push(DuplicateGroup {
+            hash,
+            byte_size,
+            paths: entries.into_iter().map(|(_, path)| path).collect(),
+        });
+    }
+
+    let prefix_matches = hash_candidates(large_candidates, Some(DUPLICATE_PREFIX));
+    let full_candidates: Vec<(u64, usize, String)> = prefix_matches
+        .into_iter()
+        .flat_map(|((byte_size, _), entries)| {
+            entries.into_iter().map(move |(index, path)| (byte_size, index, path))
+        })
+        .collect();
+
+    for ((byte_size, hash), mut entries) in hash_candidates(full_candidates, None) {
+        entries.sort_by_key(|(index, _)| *index);
+        groups.push(DuplicateGroup {
+            hash,
+            byte_size,
+            paths: entries.into_iter().map(|(_, path)| path).collect(),
+        });
+    }
+
     groups.sort_by(|a, b| {
         (b.byte_size * (b.paths.len() as u64 - 1))
             .cmp(&(a.byte_size * (a.paths.len() as u64 - 1)))
@@ -1190,9 +1398,10 @@ fn json_to_xlsx(
     };
 
     let mut headers: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for row in &rows {
         for key in row.keys() {
-            if !headers.contains(key) {
+            if seen.insert(key.as_str()) {
                 headers.push(key.clone());
             }
         }
@@ -1288,11 +1497,59 @@ fn conversion_error(error: impl std::fmt::Display) -> CoreError {
     }
 }
 
-fn csv_to_json(input: &str, delimiter: u8) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+fn stream_delimited(
+    input_path: &Path,
+    output_path: &Path,
+    in_delimiter: u8,
+    out_delimiter: u8,
+) -> Result<(), CoreError> {
+    let in_file = fs::File::open(input_path).map_err(|_| CoreError::Io {
+        path: input_path.to_string_lossy().into_owned(),
+    })?;
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(in_delimiter)
+        .flexible(true)
+        .from_reader(StripBomReader::new(BufReader::new(in_file)));
+
+    let raw_headers = reader.headers().map_err(conversion_error)?.clone();
+    let headers: Vec<String> = raw_headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            if header.trim().is_empty() {
+                format!("column_{}", index + 1)
+            } else {
+                header.to_string()
+            }
+        })
+        .collect();
+
+    let out_file = fs::File::create(output_path).map_err(|_| CoreError::Io {
+        path: output_path.to_string_lossy().into_owned(),
+    })?;
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(out_delimiter)
+        .from_writer(BufWriter::new(out_file));
+    writer.write_record(&headers).map_err(conversion_error)?;
+
+    let mut record = csv::StringRecord::new();
+    while reader.read_record(&mut record).map_err(conversion_error)? {
+        let fields = (0..headers.len()).map(|index| record.get(index).unwrap_or_default());
+        writer.write_record(fields).map_err(conversion_error)?;
+    }
+    writer.flush().map_err(|_| CoreError::Io {
+        path: output_path.to_string_lossy().into_owned(),
+    })
+}
+
+fn csv_reader_to_json<R: Read>(
+    reader: R,
+    delimiter: u8,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
         .flexible(true)
-        .from_reader(input.as_bytes());
+        .from_reader(reader);
     let headers = reader.headers()?.clone();
     let keys: Vec<String> = headers
         .iter()
@@ -1302,9 +1559,9 @@ fn csv_to_json(input: &str, delimiter: u8) -> Result<serde_json::Value, Box<dyn 
         })
         .collect();
     let mut rows = Vec::new();
-    for record in reader.records() {
-        let record = record?;
-        let mut object = serde_json::Map::new();
+    let mut record = csv::StringRecord::new();
+    while reader.read_record(&mut record)? {
+        let mut object = serde_json::Map::with_capacity(keys.len());
         for (index, key) in keys.iter().enumerate() {
             object.insert(
                 key.clone(),
@@ -1316,10 +1573,11 @@ fn csv_to_json(input: &str, delimiter: u8) -> Result<serde_json::Value, Box<dyn 
     Ok(serde_json::Value::Array(rows))
 }
 
-fn json_to_csv(
+fn json_to_csv_writer<W: Write>(
     value: &serde_json::Value,
     delimiter: u8,
-) -> Result<String, Box<dyn std::error::Error>> {
+    out: W,
+) -> Result<(), Box<dyn std::error::Error>> {
     let rows = value
         .as_array()
         .ok_or("CSV output requires a JSON array of objects")?;
@@ -1335,20 +1593,98 @@ fn json_to_csv(
     }
     let mut writer = csv::WriterBuilder::new()
         .delimiter(delimiter)
-        .from_writer(Vec::new());
+        .from_writer(out);
     writer.write_record(&headers)?;
     for row in rows {
         let object = row.as_object().ok_or("CSV output requires an array of objects")?;
-        let fields = headers.iter().map(|header| match object.get(header) {
-            None | Some(serde_json::Value::Null) => String::new(),
-            Some(serde_json::Value::String(value)) => value.clone(),
-            Some(serde_json::Value::Bool(value)) => value.to_string(),
-            Some(serde_json::Value::Number(value)) => value.to_string(),
-            Some(other) => serde_json::to_string(other).unwrap_or_default(),
-        });
-        writer.write_record(fields)?;
+        for header in &headers {
+            match object.get(header) {
+                None | Some(serde_json::Value::Null) => writer.write_field("")?,
+                Some(serde_json::Value::String(value)) => writer.write_field(value.as_bytes())?,
+                Some(serde_json::Value::Bool(value)) => {
+                    writer.write_field(if *value { "true" } else { "false" })?
+                }
+                Some(serde_json::Value::Number(value)) => writer.write_field(value.to_string())?,
+                Some(other) => {
+                    writer.write_field(serde_json::to_string(other).unwrap_or_default())?
+                }
+            }
+        }
+        writer.write_record(None::<&[u8]>)?;
     }
-    Ok(String::from_utf8(writer.into_inner()?)?)
+    writer.flush()?;
+    Ok(())
+}
+
+fn plan_single_file(
+    path: &str,
+    target_for_kind: impl Fn(FileKind) -> Option<&'static str>,
+    dynamic_targets: Option<&NormalizedTargets>,
+    fixed_target: Option<&str>,
+    suffix: &str,
+) -> Result<PlanItem, String> {
+    let source = Path::new(path);
+    let Some((byte_size, source_kind)) = inspect_source(source) else {
+        return Err(format!("Skipped missing file: {path}"));
+    };
+    let source_ext = extension_of(source);
+    let file_stem = source
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+
+    let chosen_target: Option<&str> = if let Some(fixed) = fixed_target {
+        Some(fixed)
+    } else if let Some(targets) = dynamic_targets {
+        targets.for_kind(source_kind)
+    } else {
+        target_for_kind(source_kind)
+    };
+
+    let note = animation_note(&source_ext);
+    let (fidelity, output_name) = match chosen_target {
+        Some(target) => {
+            let fid = fidelity_for(source_kind, &source_ext, target);
+            let name = if fid == Fidelity::Unsupported {
+                file_stem.clone()
+            } else {
+                output_file_name(&file_stem, suffix, target)
+            };
+            (fid, name)
+        }
+        None => (Fidelity::Unsupported, file_stem),
+    };
+
+    Ok(PlanItem {
+        source_path: path.to_string(),
+        output_name,
+        fidelity,
+        byte_size,
+        kind: source_kind,
+        note,
+    })
+}
+
+struct NormalizedTargets {
+    image: String,
+    data: String,
+    document: String,
+    audio: String,
+    video: String,
+}
+
+impl NormalizedTargets {
+    fn for_kind(&self, kind: FileKind) -> Option<&str> {
+        match kind {
+            FileKind::Image => Some(self.image.as_str()),
+            FileKind::Data => Some(self.data.as_str()),
+            FileKind::Document => Some(self.document.as_str()),
+            FileKind::Audio => Some(self.audio.as_str()),
+            FileKind::Video => Some(self.video.as_str()),
+            FileKind::Pdf => Some("pdf"),
+            FileKind::Archive | FileKind::Unknown => None,
+        }
+    }
 }
 
 #[uniffi::export]
@@ -1361,42 +1697,52 @@ pub fn build_plan(
         return Err(CoreError::EmptyBatch);
     }
     let target = normalize_extension(&target_extension)?;
+    let results = parallel_map(&paths, 24, |path| {
+        plan_single_file(path, |_| None, None, Some(target.as_str()), &suffix)
+    });
+
     let mut items = Vec::with_capacity(paths.len());
     let mut warnings = Vec::new();
+    for entry in results {
+        match entry {
+            Ok(item) => items.push(item),
+            Err(warning) => warnings.push(warning),
+        }
+    }
 
-    for path in paths {
-        let source = Path::new(&path);
-        let metadata = match fs::metadata(source) {
-            Ok(m) if m.is_file() => m,
-            _ => {
-                warnings.push(format!("Skipped missing file: {path}"));
-                continue;
-            }
-        };
-        let source_kind = detect_kind(source);
-        let source_ext = extension_of(source);
-        let file_stem = source
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".to_string());
+    if items.is_empty() {
+        return Err(CoreError::EmptyBatch);
+    }
+    Ok(Plan { items, warnings })
+}
 
-        let note = animation_note(&source_ext);
-        let fidelity = fidelity_for(source_kind, &source_ext, target.as_str());
+#[uniffi::export]
+pub fn build_mixed_plan(
+    paths: Vec<String>,
+    targets: PlanTargets,
+    suffix: String,
+) -> Result<Plan, CoreError> {
+    if paths.is_empty() {
+        return Err(CoreError::EmptyBatch);
+    }
+    let normalized = NormalizedTargets {
+        image: normalize_extension(&targets.image)?,
+        data: normalize_extension(&targets.data)?,
+        document: normalize_extension(&targets.document)?,
+        audio: normalize_extension(&targets.audio)?,
+        video: normalize_extension(&targets.video)?,
+    };
+    let results = parallel_map(&paths, 24, |path| {
+        plan_single_file(path, |_| None, Some(&normalized), None, &suffix)
+    });
 
-        let output_name = if fidelity == Fidelity::Unsupported {
-            file_stem.clone()
-        } else {
-            output_file_name(&file_stem, &suffix, &target)
-        };
-
-        items.push(PlanItem {
-            source_path: path,
-            output_name,
-            fidelity,
-            byte_size: metadata.len(),
-            kind: source_kind,
-            note,
-        });
+    let mut items = Vec::with_capacity(paths.len());
+    let mut warnings = Vec::new();
+    for entry in results {
+        match entry {
+            Ok(item) => items.push(item),
+            Err(warning) => warnings.push(warning),
+        }
     }
 
     if items.is_empty() {
@@ -1539,12 +1885,7 @@ fn fidelity_for(kind: FileKind, source_ext: &str, target: &str) -> Fidelity {
     }
 }
 
-fn detect_kind(path: &Path) -> FileKind {
-    let mut header = [0u8; 32];
-    let read = fs::File::open(path)
-        .and_then(|mut f| f.read(&mut header))
-        .unwrap_or(0);
-    let bytes = &header[..read];
+fn detect_kind_from_header(path: &Path, bytes: &[u8]) -> FileKind {
 
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         return FileKind::Image;
@@ -2122,5 +2463,59 @@ mod tests {
         assert_eq!(plan.items[1].kind, FileKind::Video);
         assert_eq!(plan.items[1].fidelity, Fidelity::Lossy);
         assert!(plan.items[1].output_name.ends_with(".gif"));
+    }
+
+    #[test]
+    fn mixed_plan_assigns_per_family_targets_in_one_pass() {
+        let png = file_with_bytes(&[0x89, b'P', b'N', b'G'], ".png");
+        let csv = file_with_bytes(b"a,b\n1,2\n", ".csv");
+        let zip_file = file_with_bytes(b"PK\x03\x04", ".zip");
+        let plan = build_mixed_plan(
+            vec![
+                png.path().to_string_lossy().into_owned(),
+                csv.path().to_string_lossy().into_owned(),
+                zip_file.path().to_string_lossy().into_owned(),
+            ],
+            PlanTargets {
+                image: "webp".to_string(),
+                data: "json".to_string(),
+                document: "md".to_string(),
+                audio: "mp3".to_string(),
+                video: "mp4".to_string(),
+            },
+            "-batch".to_string(),
+        )
+        .expect("mixed plan");
+        assert_eq!(plan.items.len(), 3);
+        assert!(plan.items[0].output_name.ends_with("-batch.webp"));
+        assert!(plan.items[1].output_name.ends_with("-batch.json"));
+        assert_eq!(plan.items[2].fidelity, Fidelity::Unsupported);
+    }
+
+    #[test]
+    fn streams_csv_with_bom_to_tsv_and_json() {
+        let mut input = NamedTempFile::with_suffix(".csv").expect("csv");
+        input.write_all("\u{feff}name,city\nAda,London\n".as_bytes()).expect("write");
+        input.flush().expect("flush");
+
+        let tsv = NamedTempFile::with_suffix(".tsv").expect("tsv");
+        convert_data(
+            input.path().to_string_lossy().into_owned(),
+            tsv.path().to_string_lossy().into_owned(),
+            "tsv".to_string(),
+        )
+        .expect("csv to tsv");
+        assert_eq!(fs::read_to_string(tsv.path()).expect("read"), "name\tcity\nAda\tLondon\n");
+
+        let json = NamedTempFile::with_suffix(".json").expect("json");
+        convert_data(
+            input.path().to_string_lossy().into_owned(),
+            json.path().to_string_lossy().into_owned(),
+            "json".to_string(),
+        )
+        .expect("csv to json");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&fs::read(json.path()).expect("read")).expect("parse");
+        assert_eq!(parsed[0]["name"], "Ada");
     }
 }

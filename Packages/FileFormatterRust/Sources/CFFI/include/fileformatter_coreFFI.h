@@ -243,6 +243,11 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_BUILD_MIXED_PLAN
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_BUILD_MIXED_PLAN
+RustBuffer uniffi_fileformatter_core_fn_func_build_mixed_plan(RustBuffer paths, RustBuffer targets, RustBuffer suffix, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_BUILD_PLAN
 #define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_FN_FUNC_BUILD_PLAN
 RustBuffer uniffi_fileformatter_core_fn_func_build_plan(RustBuffer paths, RustBuffer target_extension, RustBuffer suffix, RustCallStatus *_Nonnull out_status
@@ -537,6 +542,12 @@ void ffi_fileformatter_core_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_FILEFORMATTER_CORE_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_FILEFORMATTER_CORE_RUST_FUTURE_COMPLETE_VOID
 void ffi_fileformatter_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_BUILD_MIXED_PLAN
+#define UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_BUILD_MIXED_PLAN
+uint16_t uniffi_fileformatter_core_checksum_func_build_mixed_plan(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FILEFORMATTER_CORE_CHECKSUM_FUNC_BUILD_PLAN

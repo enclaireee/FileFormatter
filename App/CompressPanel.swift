@@ -56,13 +56,14 @@ struct CompressSettings: Equatable {
     private static let imageLevels: [(quality: Double, maxPixelSize: Int?)] = [(0.85, nil), (0.7, 2560), (0.5, 1600)]
     private static let videoRatios = [0.7, 0.45, 0.25]
 
-    func job(for action: QuickAction, urls: [URL]) -> ConversionJob {
+    func job(for action: QuickAction, urls: [URL], precomputedAlpha: Bool? = nil) -> ConversionJob {
         var job = ConversionJob(label: action.title)
         job.suffix = AppSettings.suffix(AppSettings.compressSuffix)
         switch action {
         case .compressImage:
             // ponytail: one alpha image makes the whole batch WebP; split per file if mixed batches matter.
-            job.targets.image = urls.contains(where: Self.hasAlpha) ? .webp : .jpeg
+            let usesAlpha = precomputedAlpha ?? urls.contains(where: Self.hasAlpha)
+            job.targets.image = usesAlpha ? .webp : .jpeg
             job.preserveMetadata = false
             if let level {
                 job.quality = Self.imageLevels[level].quality
@@ -92,9 +93,10 @@ struct CompressSettings: Equatable {
     }
 
     static func hasAlpha(_ url: URL) -> Bool {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
         guard QuickAction.kind(of: url) == .image,
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+              let source = CGImageSourceCreateWithURL(url as CFURL, options),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any] else {
             return false
         }
         return properties[kCGImagePropertyHasAlpha] as? Bool ?? false
@@ -174,6 +176,7 @@ struct CompressPanel: View {
     @State private var settings = CompressSettings.saved
     @State private var estimate: CompressSettings.Estimate?
     @State private var estimating = false
+    @State private var batchHasAlpha: Bool?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -214,12 +217,19 @@ struct CompressPanel: View {
                 Spacer()
                 Button("Compress") {
                     CompressSettings.saved = settings
-                    run(settings.job(for: action, urls: urls))
+                    run(settings.job(for: action, urls: urls, precomputedAlpha: batchHasAlpha))
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(settings.strength == .target && (!settings.targetMB.isFinite || settings.targetMB <= 0))
             }
+        }
+        .task(id: urls) {
+            guard action == .compressImage else { return }
+            let snapshot = urls
+            batchHasAlpha = await Task.detached(priority: .userInitiated) {
+                snapshot.contains(where: CompressSettings.hasAlpha)
+            }.value
         }
         .task(id: settings) {
             estimating = true
